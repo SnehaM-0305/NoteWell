@@ -2,168 +2,254 @@
 
 **Live demo → [notewell-7p6e.onrender.com](https://notewell-7p6e.onrender.com)**
 
-Turn a YouTube link, PDF, Word doc, audio file, or pasted text into structured
-study notes — then chat with them, generate practice questions, and export
-everything to Markdown, DOCX, or PDF. Runs on a free stack (Groq for the LLM,
-local embeddings, SQLite, ChromaDB).
+Turn a YouTube link, PDF, Word document, audio file, or pasted text into structured
+study notes — then chat with them, generate practice questions, and export everything
+to Markdown, DOCX, or PDF.
 
-> **Note on the demo:** it's on Render's free tier, so the first request after
-> a period of inactivity takes a minute or so while the server wakes up and
-> reloads its models. Data is not persisted between restarts — anything you
-> generate is yours for that session only.
+Built to run on a free stack: Groq for the LLM, local Whisper for transcription, local
+embeddings for retrieval, SQLite and ChromaDB for storage. No paid APIs beyond a free
+Groq key.
 
-> **Note on accuracy:** notes and questions are AI-generated and can contain
-> confident mistakes. Check anything important against the original source.
+> **About the demo:** it's on Render's free tier, so the first request after a period
+> of inactivity takes a minute or so while the server wakes and reloads its models.
+> Nothing is persisted between restarts — anything you generate is yours for that
+> session only.
+
+> **About accuracy:** notes, chat replies, and practice questions are AI-generated and
+> can contain confident mistakes, particularly around tools or terms with similar names.
+> Check anything important against your original source.
 
 ---
-# Video-to-Notes AI — Step 2: Whisper Fallback + Library + Export
 
-Builds on **Step 1's core pipeline** (paste link → captions → Groq notes) with the three
-things Step 1's README promised next:
+## What it does
 
-1. **Whisper fallback** — videos with no captions now transcribe locally via `yt-dlp` (audio
-   only) + `faster-whisper`, instead of just failing.
-2. **Persistence** — every generated note is saved to a small SQLite database
-   (`backend/video_to_notes.db`, created automatically on first run).
-3. **Library screen** — a new tab in the UI lists everything you've processed, newest first.
-4. **Export** — Markdown / DOCX / PDF download buttons on every note, in both the notes view
-   and the Library.
+**Five input types.** YouTube links (uses captions where available, falls back to local
+Whisper transcription where not), PDF, DOCX, audio uploads, and pasted text. Everything
+funnels into the same chunk → summarize → structure pipeline.
 
-PDF/RAG uploads, chat-with-notes, and MCP tools are still later steps (Phases 3–4 of the plan).
+**Three learning modes.** Beginner, Medium, and Expert produce genuinely different
+documents, not the same notes at three lengths. The mode changes the *structure* of the
+output, not just the wording: Beginner leads with a concrete example and includes a
+glossary, Expert opens with a dense summary, drops the glossary as padding, and adds
+sections on trade-offs and open questions. The mode also shapes chat replies and the
+difficulty calibration of practice questions.
+
+**Chat with your notes.** RAG-backed retrieval over a local vector store. Scope a
+conversation to one note, or leave it general and it searches your whole library,
+showing which notes it drew from. Conversations are saved as threads you can reopen.
+
+**Practice questions.** Generate 10, 20, 50, or 100 from any saved note. Long sets are
+produced in batches with previously-generated questions fed back in, so the model
+doesn't repeat itself. Export to DOCX or PDF, with or without the answer key depending
+on whether answers are shown on screen.
+
+**Library.** Browse, reopen, and delete everything you've generated. Deleting a note
+removes its question sets, its chat threads, and its vector-store chunks.
+
+---
+
+## Project structure
 
 ```
-video-to-notes/
+vtn/
 ├── backend/
-│   ├── main.py              ← FastAPI app + routes (pipeline, library, export)
-│   ├── db.py                ← SQLite persistence (new)
-│   ├── transcription.py     ← yt-dlp + faster-whisper fallback (new)
-│   ├── export.py            ← Markdown → DOCX / PDF conversion (new)
-│   ├── requirements.txt     ← Python dependencies (updated)
-│   ├── .env.example         ← template for your API key + Whisper settings
-│   └── video_to_notes.db    ← created automatically on first run (not in git)
+│   ├── main.py              FastAPI app — all routes
+│   ├── db.py                SQLite persistence + schema migrations
+│   ├── rag.py               Chunking, embeddings, ChromaDB retrieval
+│   ├── questions.py         Practice-question generation + Markdown rendering
+│   ├── learning_modes.py    Beginner/Medium/Expert prompts and note structures
+│   ├── extraction.py        PDF and DOCX text extraction
+│   ├── transcription.py     yt-dlp + faster-whisper
+│   ├── export.py            Markdown → DOCX / PDF
+│   ├── requirements.txt
+│   ├── .env.example
+│   ├── video_to_notes.db    created on first run (gitignored)
+│   └── chroma_db/           created on first run (gitignored)
 ├── static/
-│   └── index.html           ← UI: Generate tab + Library tab + export buttons (updated)
+│   ├── index.html
+│   ├── css/styles.css
+│   └── js/app.js
 └── README.md
 ```
 
-## 1. Prerequisites
+---
 
-- Python 3.10+ installed
-- A free Groq account (for the LLM): https://console.groq.com
-- ~1GB free disk space the first time a Whisper model downloads (one-time, cached after that)
+## Running it locally
 
-## 2. Get a free Groq API key
+### Prerequisites
 
-1. Go to https://console.groq.com and sign up (free).
-2. Open **API Keys** in the left sidebar → **Create API Key**.
-3. Copy the key — you'll only see it once.
+- Python 3.10+
+- A free Groq API key from [console.groq.com](https://console.groq.com)
+- ~1 GB free disk space for model downloads (one-time, cached afterwards)
 
-## 3. Install the packages
-
-Open a terminal in the `video-to-notes/backend` folder and run:
+### Setup
 
 ```bash
+cd backend
 python -m venv venv
-source venv/bin/activate        # on Windows: venv\Scripts\activate
+venv\Scripts\activate          # Windows
+# source venv/bin/activate     # macOS / Linux
 pip install -r requirements.txt
 ```
 
-This now also installs `yt-dlp`, `faster-whisper`, `python-docx`, and `reportlab`.
-`faster-whisper` downloads its model from Hugging Face automatically the first time it's
-actually used (i.e. the first time you process a video with no captions) — not at install time.
-
-## 4. Add your API key
+Copy the environment template and add your key:
 
 ```bash
-cp .env.example .env
+copy .env.example .env         # Windows
+# cp .env.example .env         # macOS / Linux
 ```
-
-Open `.env` and paste your key:
 
 ```
 GROQ_API_KEY=gsk_your_real_key_here
 ```
 
 The Whisper settings in `.env.example` (`WHISPER_MODEL_SIZE`, `WHISPER_DEVICE`,
-`WHISPER_COMPUTE_TYPE`) are optional — the defaults (small / cpu / int8) work out of the box.
+`WHISPER_COMPUTE_TYPE`) are optional — the defaults (small / cpu / int8) work as-is.
 
-## 5. Run it
+### Run
 
 ```bash
 uvicorn main:app --reload
 ```
 
-The first run creates `backend/video_to_notes.db` automatically — nothing else to set up.
+Open **http://127.0.0.1:8000**. The database and vector store are created automatically
+on first run.
 
-## 6. Use it
+Two models download from Hugging Face on first use, not at install time:
+`all-MiniLM-L6-v2` for embeddings (~90 MB) and a Whisper model the first time you
+process something with no captions.
 
-Open **http://127.0.0.1:8000**:
+---
 
-1. **Generate tab** — paste a video link and click **Generate notes**, same as Step 1.
-   - If the video has captions, it works exactly like before (instant).
-   - If not, you'll see it take longer the first time — it's downloading audio and
-     transcribing locally with Whisper. Subsequent runs are faster once the model is cached.
-2. Every generated note is now saved — you'll see **Export .md / .docx / .pdf** buttons
-   right under the notes.
-3. **Library tab** — see every note you've generated, with the same View/export actions.
+## How it works
+
+### The notes pipeline
+
+Any source is reduced to plain text, split into ~900-word chunks, summarized chunk by
+chunk (the map step), then assembled into structured Markdown (the reduce step).
+
+The map step is deliberately **not** mode-aware. Simplifying there loses detail the
+reduce step can never recover — an early version produced Expert notes that were vaguer
+than Medium because specifics had already been dropped. The chunk summarizer preserves
+every proper noun and figure; `build_notes()` decides what the reader actually sees.
+
+### Learning modes
+
+Each mode supplies two things: a prose-style block appended to the system prompt, and a
+Markdown skeleton injected into the user prompt.
+
+The skeleton is what matters. An earlier version varied only the system prompt and the
+three modes came out nearly identical, because a hardcoded output structure in the user
+prompt overrides tone guidance in the system prompt. Explicit shape instructions belong
+in the user prompt.
+
+### RAG
+
+`rag.py` splits each note into ~220-word overlapping chunks, breaking on headings first
+so a chunk doesn't straddle unrelated sections. Chunks are embedded locally with
+`sentence-transformers` and stored in ChromaDB, filtered by `note_id` metadata for
+note-scoped chat.
+
+If the embedding dependencies are missing or a note hasn't been indexed, chat falls back
+to passing the whole note as context. It degrades rather than breaking.
+
+`POST /api/reindex` rebuilds the index from every note in the database. It also runs
+once in a background thread at startup, so notes generated before RAG existed get
+picked up automatically.
+
+### Question generation
+
+100 questions in one LLM call produces repetition and drift, so sets are generated in
+batches of 20 with already-written questions passed back in as things to avoid. Output
+is JSON, parsed defensively — models wrap it in code fences despite instructions not to.
+
+---
+
+## API
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `POST` | `/api/generate-notes` | From a YouTube URL |
+| `POST` | `/api/generate-notes/text` | From pasted text |
+| `POST` | `/api/generate-notes/pdf` | From an uploaded PDF |
+| `POST` | `/api/generate-notes/docx` | From an uploaded Word document |
+| `POST` | `/api/generate-notes/audio` | From an uploaded audio file |
+| `GET` | `/api/library` | All notes, newest first |
+| `GET` | `/api/notes/{id}` | One note |
+| `DELETE` | `/api/notes/{id}` | Delete a note and everything derived from it |
+| `POST` | `/api/generate-questions` | Practice questions from a note |
+| `GET` | `/api/question-sets/{id}` | Retrieve a saved set |
+| `GET` | `/api/chat/sessions` | All conversations |
+| `GET` | `/api/chat/history?session_id=` | Messages in one conversation |
+| `POST` | `/api/chat` | Send a message (creates a session if none given) |
+| `DELETE` | `/api/chat/sessions/{id}` | Delete a conversation |
+| `POST` | `/api/reindex` | Rebuild the vector index |
+| `GET` | `/api/export/{id}/{md\|docx\|pdf}` | Export a note |
+| `GET` | `/api/export/questions/{id}/{docx\|pdf}?answers=` | Export a question set |
+
+---
+
+## Deploying
+
+The live demo runs on Render's free tier:
+
+- **Root directory:** `backend`
+- **Build:** `pip install -r requirements.txt`
+- **Start:** `uvicorn main:app --host 0.0.0.0 --port $PORT`
+- **Environment:** `GROQ_API_KEY`
+
+`requirements.txt` pins the CPU-only PyTorch index. Without that line, Linux pulls the
+CUDA build — about 2.5 GB of NVIDIA libraries this app never touches, which won't fit in
+a free-tier container.
+
+Free tier has no persistent disk, so the SQLite database and ChromaDB store reset on
+every restart. Fine for a demo where visitors generate their own notes; a paid plan with
+a mounted disk, or an external Postgres, would be needed to keep anything.
+
+---
 
 ## Troubleshooting
 
-- **"Microsoft Visual C++ 14.0 or greater is required" / "Failed building wheel for av"** →
-  this happens on newer Python versions (3.13) with old pins. Make sure you're installing from
-  the `requirements.txt` in *this* Step 2 package (it uses `faster-whisper>=1.1.0`, not an older
-  pinned version) — that alone pulls a version of `av` with a ready-made Windows wheel, so no
-  compiler is needed. If it still happens: `pip install --upgrade pip` first, then re-run
-  `pip install -r requirements.txt`.
-- **"GROQ_API_KEY is not set"** → you skipped step 4, or `.env` isn't in `backend/`.
-- **Whisper fallback is slow** → normal on CPU-only machines, especially the first video
-  (model download). Drop `WHISPER_MODEL_SIZE` to `base` or `tiny` in `.env` for more speed
-  at some accuracy cost — see Section 11 of the plan.
-- **"Could not download audio for this video"** → some videos are geo-restricted or
-  age-restricted and `yt-dlp` can't fetch them without extra auth; try a different video.
-- **Exports look empty/odd** → export parses the Markdown structure the LLM produces
-  (`##` headings, `-` bullets, `**bold**` terms) — if you edited the raw notes elsewhere
-  into a very different shape, formatting may not carry over perfectly.
-- **CORS / connection errors** → open `http://127.0.0.1:8000` (served by the backend), not
-  `static/index.html` directly on disk.
+**"GROQ_API_KEY is not set"** — `.env` is missing, or it isn't inside `backend/`.
 
-## What's next (Step 3 preview)
+**"Failed building wheel for av" / "Microsoft Visual C++ 14.0 required"** — an old
+`faster-whisper` pin resolving to an `av` version with no Windows wheel. Run
+`pip install --upgrade pip`, then reinstall from this `requirements.txt`.
 
-- PDF / existing-notes upload, chunking, embeddings, and a ChromaDB vector store (Section 5
-  of the plan).
-- "Chat with your notes" — ask follow-up questions across a video's notes and your own
-  documents together.
+**Whisper is slow** — expected on CPU, especially the first run while the model
+downloads. Drop `WHISPER_MODEL_SIZE` to `base` or `tiny` in `.env` to trade accuracy for
+speed.
 
-We'll keep building one working, tested piece at a time.
+**"Could not download audio for this video"** — geo- or age-restricted videos need auth
+`yt-dlp` doesn't have. Try another video.
 
-## Step 4: Real RAG for chat (latest)
+**Exports look wrong** — the exporters parse the Markdown the model produces (`##`
+headings, `-` bullets, `**bold**`). Heavily hand-edited notes may not convert cleanly.
 
-Chat no longer pastes the whole note's Markdown into the prompt. Instead:
+**CORS or connection errors** — open `http://127.0.0.1:8000`, not `static/index.html`
+from disk.
 
-- `backend/rag.py` chunks every generated note (~220 words per chunk, header-aware, with
-  overlap), embeds the chunks locally with `sentence-transformers` (`all-MiniLM-L6-v2`,
-  no API calls), and stores them in a local, self-hosted **ChromaDB** collection at
-  `backend/chroma_db/` (created automatically, not in git).
-- Note-scoped chat (`note:<id>`) retrieves the top-5 chunks most relevant to your question
-  from that note, instead of the whole thing.
-- **General chat now searches your entire note library** — ask something without picking a
-  note first and it'll pull the most relevant passages from any of your generated notes,
-  and tell you which note(s) it used (shown as small "from: ..." chips under the reply in
-  the UI; click one to jump chat into that note's scope).
-- New endpoint: `POST /api/reindex` — rebuilds the RAG index from every note already in
-  `video_to_notes.db`. Also runs automatically once in the background on server startup,
-  so notes generated before this upgrade get indexed without you doing anything; call it
-  by hand if you ever want to force a rebuild.
-- If the embedding deps aren't installed yet (`pip install -r requirements.txt` now also
-  pulls in `sentence-transformers` + `chromadb`) or the index has nothing for a note yet,
-  chat quietly falls back to the old whole-note-as-context behavior — it never breaks, it
-  just gets smarter once RAG is available.
+**Chat cites a note you deleted** — the Chroma delete failed silently. Check the console
+for a `[rag]` line and run `POST /api/reindex`.
 
-First run downloads the small `all-MiniLM-L6-v2` embedding model from Hugging Face once,
-then it's cached locally, same as the Whisper model already is.
+---
 
-### What's next after this
+## Known limitations
 
-- Real progress reporting (SSE/WebSocket) instead of the fake `setTimeout` step indicator.
-- React/Vite/Tailwind/shadcn frontend rewrite (same backend API, no changes needed there).
-- Auth (Supabase) + Postgres, then deployment.
+- **Scanned PDFs don't work.** Text extraction only, no OCR.
+- **The model invents connections between similarly-named things.** Observed with
+  uv/libuv, uv/Uvicorn, and LangChain/LangGraph. Prompt constraints reduce it; nothing
+  eliminates it at this model size.
+- **Progress reporting is fake.** The step indicator runs on a timer, not real events
+  from the server.
+- **No authentication.** Single-user by design; the learning-mode preference lives in
+  `localStorage`.
+
+## Possible next steps
+
+- Real progress via SSE or WebSocket
+- Streaming chat replies
+- Interactive quiz mode — answer questions in-app rather than reading a list
+- Flashcards generated from the Key Terms section
+- Groq's hosted Whisper instead of local, which would cut the container size
+  dramatically and make audio viable on free hosting
