@@ -1,0 +1,26 @@
+# virtual environments
+venv/
+backend/venv/
+.venv/
+
+# secrets
+.env
+backend/.env
+*.env
+!.env.example
+
+# local data — regenerated at runtime, never committed
+backend/video_to_notes.db
+backend/chroma_db/
+*.db
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
