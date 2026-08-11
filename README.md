@@ -1,3 +1,21 @@
+# Notewell
+
+**Live demo → [notewell-7p6e.onrender.com](https://notewell-7p6e.onrender.com)**
+
+Turn a YouTube link, PDF, Word doc, audio file, or pasted text into structured
+study notes — then chat with them, generate practice questions, and export
+everything to Markdown, DOCX, or PDF. Runs on a free stack (Groq for the LLM,
+local embeddings, SQLite, ChromaDB).
+
+> **Note on the demo:** it's on Render's free tier, so the first request after
+> a period of inactivity takes a minute or so while the server wakes up and
+> reloads its models. Data is not persisted between restarts — anything you
+> generate is yours for that session only.
+
+> **Note on accuracy:** notes and questions are AI-generated and can contain
+> confident mistakes. Check anything important against the original source.
+
+---
 # Video-to-Notes AI — Step 2: Whisper Fallback + Library + Export
 
 Builds on **Step 1's core pipeline** (paste link → captions → Groq notes) with the three
