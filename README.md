@@ -27,6 +27,20 @@ Groq key.
 Whisper transcription where not), PDF, DOCX, audio uploads, and pasted text. Everything
 funnels into the same chunk → summarize → structure pipeline.
 
+**Timestamped, clickable notes for video sources.** Video notes carry real timecodes —
+each section heading is labeled with the exact `[MM:SS–MM:SS]` range of the source it
+covers, computed from the actual transcript timing, not guessed by the model. You can
+also generate notes for just a slice of a video instead of the whole thing (`start_time`/
+`end_time`). Every timestamped section renders as a clickable chip that opens the source
+video at that exact moment, in a new tab.
+
+**Live, streamed generation for video/audio sources.** Generating notes from a video
+doesn't block on one long request. It runs as a background job: each section is written
+in its final, ready-to-render form and streamed to the page the moment it's done, so you
+can start reading early sections while later ones are still being written. A live,
+self-calibrating time estimate updates as it goes, based on this run's actual measured
+speed rather than a fixed guess.
+
 **Three learning modes.** Beginner, Medium, and Expert produce genuinely different
 documents, not the same notes at three lengths. The mode changes the *structure* of the
 output, not just the wording: Beginner leads with a concrete example and includes a
@@ -53,14 +67,15 @@ removes its question sets, its chat threads, and its vector-store chunks.
 ```
 vtn/
 ├── backend/
-│   ├── main.py              FastAPI app — all routes
+│   ├── main.py              FastAPI app — all routes, background job pipeline
 │   ├── db.py                SQLite persistence + schema migrations
 │   ├── rag.py               Chunking, embeddings, ChromaDB retrieval
 │   ├── questions.py         Practice-question generation + Markdown rendering
 │   ├── learning_modes.py    Beginner/Medium/Expert prompts and note structures
 │   ├── extraction.py        PDF and DOCX text extraction
-│   ├── transcription.py     yt-dlp + faster-whisper
-│   ├── export.py            Markdown → DOCX / PDF
+│   ├── transcription.py     yt-dlp + faster-whisper, incremental progress reporting
+│   ├── export.py            Markdown → DOCX / PDF, timestamped-section extraction
+│   ├── timeutils.py         Timestamp parsing/formatting, adaptive marker density
 │   ├── requirements.txt
 │   ├── .env.example
 │   ├── video_to_notes.db    created on first run (gitignored)
@@ -80,6 +95,11 @@ vtn/
 
 - Python 3.10+
 - A free Groq API key from [console.groq.com](https://console.groq.com)
+- **`ffmpeg` on your system PATH.** Not installed via pip — it's a system binary, needed
+  for trimming audio when you request a custom time range. `winget install ffmpeg`
+  (Windows), `brew install ffmpeg` (macOS), or `apt-get install ffmpeg` (Linux). After
+  installing, open a **new** terminal before running the server — an already-open shell
+  keeps the old `PATH` cached and won't see the newly installed binary.
 - ~1 GB free disk space for model downloads (one-time, cached afterwards)
 
 ### Setup
@@ -125,23 +145,71 @@ process something with no captions.
 
 ### The notes pipeline
 
-Any source is reduced to plain text, split into ~900-word chunks, summarized chunk by
-chunk (the map step), then assembled into structured Markdown (the reduce step).
+Any source is reduced to plain text, split into chunks, and assembled into structured
+Markdown. Two variants:
 
-The map step is deliberately **not** mode-aware. Simplifying there loses detail the
-reduce step can never recover — an early version produced Expert notes that were vaguer
-than Medium because specifics had already been dropped. The chunk summarizer preserves
-every proper noun and figure; `build_notes()` decides what the reader actually sees.
+- **Untimed sources** (pasted text, PDF, DOCX): word-count chunking, summarized chunk by
+  chunk (the map step), then assembled into one structured document in a single reduce
+  call. The map step is deliberately **not** mode-aware — simplifying there loses detail
+  the reduce step can never recover, an early version produced Expert notes that were
+  vaguer than Medium because specifics had already been dropped.
+- **Timed sources** (video, audio): chunked by *time* instead of word count, with each
+  chunk written directly into its final, ready-to-render section — see below.
+
+### Timestamps and custom ranges
+
+Both transcript sources (YouTube captions and Whisper) carry per-segment timing
+natively; it's kept rather than flattened into one string. From there:
+
+- **Custom range** — pass `start_time`/`end_time` (accepts `"12:30"`, `"1:02:00"`, or
+  plain seconds) to `/api/generate-notes` to generate notes for just a slice of a video.
+  Captions are filtered in place; for Whisper, the downloaded audio is trimmed with
+  `ffmpeg` before transcription, so only the requested slice is actually processed.
+- **Adaptive marker density** — rather than a fixed chunk size, the interval is picked
+  so a note ends up with roughly 8 section headings regardless of video length: a
+  12-minute clip gets ~5-minute sections, a 3-hour lecture gets ~30-minute sections.
+- **Section headings carry real timecodes** in the form `[MM:SS–MM:SS] Title`, extracted
+  after generation into a `note_sections` table (not regex-parsed by the frontend).
+- **Clickable timestamps** — the frontend renders each section as a chip linking to
+  `youtube.com/watch?v={id}&t={seconds}s`, opening in a new tab already seeked to that
+  moment. Deliberately not an embedded player: the YouTube iframe API can be silently
+  blocked by ad blockers or restrictive networks, which turned out to be more fragile
+  than it was worth for what a plain link achieves just as well.
+
+### Async generation & live progress
+
+Video/audio generation runs as a background job instead of one blocking request:
+
+- `POST /api/generate-notes` returns `{"job_id": ...}` immediately; the pipeline runs on
+  a background thread.
+- `GET /api/jobs/{job_id}` is polled by the frontend every ~2 seconds, returning current
+  stage (`transcribing` / `writing_sections` / `finalizing` / `done`), a live time
+  estimate, and every section written so far.
+- Each chunk is written directly in **final, ready-to-render form** — not an
+  intermediate summary to be rewritten later — so the frontend can render real content
+  as it streams in, not just a percentage. The whole-document parts that need full
+  context (the opening TL;DR/summary, and the closing glossary/trade-offs/check-yourself
+  questions) are written in one pass at the end, once every section exists to reference.
+- The time estimate is **not** a hardcoded guess — Whisper's speed varies too much by
+  CPU for that to be meaningful. It's computed from this run's own observed throughput
+  (`elapsed ÷ work done so far`), so it self-calibrates within the first few data points
+  rather than showing a number nobody could back up.
+- Untimed sources (pasted text, PDF, DOCX, direct audio upload) stay simple synchronous
+  requests — they don't have the long-wait problem this solves.
 
 ### Learning modes
 
-Each mode supplies two things: a prose-style block appended to the system prompt, and a
-Markdown skeleton injected into the user prompt.
+Each mode supplies prose-style instructions and a Markdown skeleton. For untimed
+sources, one skeleton covers the whole document. For timed sources, the skeleton is
+split three ways — one for writing a single section, one for the opening block(s), one
+for the closing block(s) — so a chunk's section can be written and streamed the moment
+it's ready, with only the whole-document parts (TL;DR, glossary, trade-offs) waiting
+until every section exists.
 
-The skeleton is what matters. An earlier version varied only the system prompt and the
-three modes came out nearly identical, because a hardcoded output structure in the user
-prompt overrides tone guidance in the system prompt. Explicit shape instructions belong
-in the user prompt.
+The skeleton is what matters more than the tone instructions. An earlier version varied
+only the system prompt and the three modes came out nearly identical, because a
+hardcoded output structure in the user prompt overrides tone guidance in the system
+prompt. Explicit shape instructions belong in the user prompt.
 
 ### RAG
 
@@ -150,8 +218,10 @@ so a chunk doesn't straddle unrelated sections. Chunks are embedded locally with
 `sentence-transformers` and stored in ChromaDB, filtered by `note_id` metadata for
 note-scoped chat.
 
-If the embedding dependencies are missing or a note hasn't been indexed, chat falls back
-to passing the whole note as context. It degrades rather than breaking.
+Reindexing is always delete-then-upsert (`reindex_note_clean`), not upsert-only —
+upserting alone can leave stale, orphaned chunks behind if a note's chunk count ever
+shrinks. If the embedding dependencies are missing or a note hasn't been indexed, chat
+falls back to passing the whole note as context. It degrades rather than breaking.
 
 `POST /api/reindex` rebuilds the index from every note in the database. It also runs
 once in a background thread at startup, so notes generated before RAG existed get
@@ -169,7 +239,9 @@ is JSON, parsed defensively — models wrap it in code fences despite instructio
 
 | Method | Endpoint | Purpose |
 |---|---|---|
-| `POST` | `/api/generate-notes` | From a YouTube URL |
+| `POST` | `/api/generate-notes` | From a YouTube URL. Accepts optional `start_time`/`end_time`. Starts a background job, returns `{"job_id": ...}` immediately |
+| `GET` | `/api/jobs/{job_id}` | Poll a video-generation job — stage, live time estimate, streamed sections, final `note_id` once done |
+| `GET` | `/api/notes/{id}/sections` | Timestamped section list for a note (empty for untimed sources) |
 | `POST` | `/api/generate-notes/text` | From pasted text |
 | `POST` | `/api/generate-notes/pdf` | From an uploaded PDF |
 | `POST` | `/api/generate-notes/docx` | From an uploaded Word document |
@@ -194,7 +266,9 @@ is JSON, parsed defensively — models wrap it in code fences despite instructio
 The live demo runs on Render's free tier:
 
 - **Root directory:** `backend`
-- **Build:** `pip install -r requirements.txt`
+- **Build:** `apt-get update && apt-get install -y ffmpeg && pip install -r requirements.txt`
+  (the `ffmpeg` install is required for custom time-range trimming — Render's default
+  image doesn't include it)
 - **Start:** `uvicorn main:app --host 0.0.0.0 --port $PORT`
 - **Environment:** `GROQ_API_KEY`
 
@@ -212,16 +286,30 @@ a mounted disk, or an external Postgres, would be needed to keep anything.
 
 **"GROQ_API_KEY is not set"** — `.env` is missing, or it isn't inside `backend/`.
 
+**`groq.NotFoundError: model_not_found` / 404 from Groq** — the pinned `GROQ_MODEL` was
+deprecated. Groq periodically retires free-tier models on a schedule outside this app's
+control; check [console.groq.com/docs/deprecations](https://console.groq.com/docs/deprecations)
+for the current recommended replacement and update `GROQ_MODEL` in `main.py`.
+
+**`FileNotFoundError: [WinError 2]` / "ffmpeg not recognized"** — `ffmpeg` isn't on
+`PATH`. Install it (see Prerequisites), then open a genuinely new terminal — and restart
+the server from that new terminal — before trying again. An already-running shell or
+server process keeps the old `PATH` cached even after installation.
+
 **"Failed building wheel for av" / "Microsoft Visual C++ 14.0 required"** — an old
 `faster-whisper` pin resolving to an `av` version with no Windows wheel. Run
 `pip install --upgrade pip`, then reinstall from this `requirements.txt`.
 
 **Whisper is slow** — expected on CPU, especially the first run while the model
 downloads. Drop `WHISPER_MODEL_SIZE` to `base` or `tiny` in `.env` to trade accuracy for
-speed.
+speed. This is also why generation for video runs as a background job with live progress
+rather than blocking — see "Async generation & live progress" above.
 
-**"Could not download audio for this video"** — geo- or age-restricted videos need auth
-`yt-dlp` doesn't have. Try another video.
+**"Could not download audio for this video" / HTTP 403 from yt-dlp** — often a stale
+`yt-dlp` version; YouTube changes its player logic specifically to break scrapers, and
+`yt-dlp` patches around it continuously. Try `pip install -U yt-dlp` first. If that
+doesn't resolve it, the video itself may be age-restricted, region-locked, or have
+owner-disabled downloads.
 
 **Exports look wrong** — the exporters parse the Markdown the model produces (`##`
 headings, `-` bullets, `**bold**`). Heavily hand-edited notes may not convert cleanly.
@@ -240,14 +328,23 @@ for a `[rag]` line and run `POST /api/reindex`.
 - **The model invents connections between similarly-named things.** Observed with
   uv/libuv, uv/Uvicorn, and LangChain/LangGraph. Prompt constraints reduce it; nothing
   eliminates it at this model size.
-- **Progress reporting is fake.** The step indicator runs on a timer, not real events
-  from the server.
+- **No embedded video player.** Timestamp chips open the source video in a new tab
+  rather than playing inline, to avoid the YouTube iframe API's dependency on
+  third-party requests that ad blockers and some networks silently block.
+- **Custom time ranges still download the full audio** before trimming, for videos that
+  fall back to Whisper — only transcription is limited to the requested slice, not the
+  download. A range-aware partial download is a possible future optimization.
 - **No authentication.** Single-user by design; the learning-mode preference lives in
   `localStorage`.
 
 ## Possible next steps
 
-- Real progress via SSE or WebSocket
+- **Section-level edit/regenerate** — revise or manually edit one section of a note
+  without touching the rest or regenerating from scratch.
+- **Batch playlist import** — submit a whole YouTube playlist, processed in the
+  background with per-video progress and per-item failure isolation.
+- **Partial audio download for custom ranges** — download only the requested slice's
+  bytes instead of the full audio before trimming.
 - Streaming chat replies
 - Interactive quiz mode — answer questions in-app rather than reading a list
 - Flashcards generated from the Key Terms section

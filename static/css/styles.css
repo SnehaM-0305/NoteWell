@@ -314,6 +314,15 @@ button.primary:disabled{ opacity:0.55; cursor:not-allowed; transform:none; }
 .step-row.done{ color:var(--text-mid); }
 .step-row.done .dot{ background:var(--violet-soft); }
 
+.progress-detail{
+  margin-top:10px;
+  padding-top:10px;
+  border-top:1px solid var(--glass-border);
+  font-family:'JetBrains Mono', monospace;
+  font-size:0.72rem;
+  color:var(--text-low);
+}
+
 /* ---------- notes / questions output card ---------- */
 .notes-card{ display:none; margin-top:20px; padding:0; overflow:hidden; }
 .notes-card.active{ display:block; }
@@ -628,3 +637,50 @@ select:disabled{ opacity:0.5; cursor:not-allowed; }
   color:var(--text-low);
   text-align:center;
 }
+
+/* ---------- video time-range inputs (Phase 1.2) ---------- */
+.time-range-row{
+  display:flex;
+  gap:10px;
+  margin-top:10px;
+  flex-wrap:wrap;
+}
+.time-range-row input{
+  flex:1;
+  min-width:140px;
+}
+.time-range-hint{
+  margin:8px 2px 0;
+  font-size:0.76rem;
+  color:var(--text-low);
+  line-height:1.5;
+}
+
+.video-embed{ margin-bottom:18px; }
+.yt-player-wrap{
+  position:relative;
+  width:100%;
+  padding-bottom:56.25%;   /* 16:9 aspect ratio, no JS needed to maintain it */
+  height:0;
+  overflow:hidden;
+  border-radius:var(--radius-sm);
+}
+.yt-player-wrap iframe{
+  position:absolute; top:0; left:0; width:100%; height:100%; border:0;
+}
+.section-chips{ display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+
+.section-chip{
+  font-family:'JetBrains Mono', monospace;
+  font-size:0.74rem;
+  color:var(--violet-soft);
+  background:rgba(139,92,246,0.12);
+  border:1px solid rgba(139,92,246,0.35);
+  border-radius:999px;
+  padding:5px 12px;
+  cursor:pointer;
+  text-decoration:none;      /* NEW -- suppress default link underline */
+  display:inline-block;      /* NEW -- anchors need this for padding to behave like a button */
+  transition:background .15s ease;
+}
+.section-chip:hover{ background:rgba(139,92,246,0.22); }

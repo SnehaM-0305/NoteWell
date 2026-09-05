@@ -1,296 +1,344 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Notewell</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/css/styles.css">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js" defer></script>
-<script src="/js/app.js" defer></script>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Notewell</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link
+    href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap"
+    rel="stylesheet">
+  <link rel="stylesheet" href="/css/styles.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js" defer></script>
+ 
+  <script src="/js/app.js" defer></script>
 </head>
+
 <body>
 
-<div class="aurora"></div>
+  <div class="aurora"></div>
 
-<main>
-  <div class="topbar">
-    <div class="brand"><span class="mark"></span>Notewell</div>
-    <div class="status-pill"><span class="dot"></span>local &amp; free</div>
-  </div>
-
-  <div class="learning-mode-row">
-    <span class="learning-mode-label">Learning mode</span>
-    <div class="learning-switch glass">
-      <button class="learning-btn" id="learningBtn-beginner" onclick="setLearningMode('beginner')">Beginner</button>
-      <button class="learning-btn" id="learningBtn-medium" onclick="setLearningMode('medium')">Medium</button>
-      <button class="learning-btn" id="learningBtn-expert" onclick="setLearningMode('expert')">Expert</button>
-    </div>
-  </div>
-
-  <div class="mode-switch glass">
-    <button class="mode-btn active" id="modeGenerateBtn" onclick="setMode('generate')">Generate</button>
-    <button class="mode-btn" id="modeChatBtn" onclick="setMode('chat')">Chat</button>
-    <button class="mode-btn" id="modeQuestionsBtn" onclick="setMode('questions')">Questions</button>
-    <button class="mode-btn" id="modeLibraryBtn" onclick="setMode('library')">Library</button>
-  </div>
-
-  <!-- ================= GENERATE PANEL ================= -->
-  <div class="panel active" id="panelGenerate">
-    <div class="hero">
-      <h1>Turn anything into study notes</h1>
-      <p>Paste a video link, drop in a PDF or Word file, upload audio, or just paste text — pick your source below.</p>
+  <main>
+    <div class="topbar">
+      <div class="brand"><span class="mark"></span>Notewell</div>
+      <div class="status-pill"><span class="dot"></span>local &amp; free</div>
     </div>
 
-    <div class="glass input-card">
-      <div class="source-tabs">
-        <button class="source-tab active" data-source="text" onclick="setSource('text')">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
-          Text
-        </button>
-        <button class="source-tab" data-source="pdf" onclick="setSource('pdf')">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2h9l5 5v15H6z"/><path d="M15 2v5h5"/></svg>
-          PDF
-        </button>
-        <button class="source-tab" data-source="docx" onclick="setSource('docx')">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2h9l5 5v15H6z"/><path d="M15 2v5h5"/></svg>
-          DOCX
-        </button>
-        <button class="source-tab" data-source="audio" onclick="setSource('audio')">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
-          Audio
-        </button>
-        <button class="source-tab" data-source="video" onclick="setSource('video')">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
-          Video link
-        </button>
+    <div class="learning-mode-row">
+      <span class="learning-mode-label">Learning mode</span>
+      <div class="learning-switch glass">
+        <button class="learning-btn" id="learningBtn-beginner" onclick="setLearningMode('beginner')">Beginner</button>
+        <button class="learning-btn" id="learningBtn-medium" onclick="setLearningMode('medium')">Medium</button>
+        <button class="learning-btn" id="learningBtn-expert" onclick="setLearningMode('expert')">Expert</button>
+      </div>
+    </div>
+
+    <div class="mode-switch glass">
+      <button class="mode-btn active" id="modeGenerateBtn" onclick="setMode('generate')">Generate</button>
+      <button class="mode-btn" id="modeChatBtn" onclick="setMode('chat')">Chat</button>
+      <button class="mode-btn" id="modeQuestionsBtn" onclick="setMode('questions')">Questions</button>
+      <button class="mode-btn" id="modeLibraryBtn" onclick="setMode('library')">Library</button>
+    </div>
+
+    <!-- ================= GENERATE PANEL ================= -->
+    <div class="panel active" id="panelGenerate">
+      <div class="hero">
+        <h1>Turn anything into study notes</h1>
+        <p>Paste a video link, drop in a PDF or Word file, upload audio, or just paste text — pick your source below.
+        </p>
       </div>
 
-      <div class="input-zone">
-        <!-- Text -->
-        <div class="source-input" id="input-text">
-          <textarea id="textInput" placeholder="Paste a paragraph, lecture notes, or any text you want turned into structured study notes…"></textarea>
+      <div class="glass input-card">
+        <div class="source-tabs">
+          <button class="source-tab active" data-source="text" onclick="setSource('text')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M4 6h16M4 12h16M4 18h10" />
+            </svg>
+            Text
+          </button>
+          <button class="source-tab" data-source="pdf" onclick="setSource('pdf')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M6 2h9l5 5v15H6z" />
+              <path d="M15 2v5h5" />
+            </svg>
+            PDF
+          </button>
+          <button class="source-tab" data-source="docx" onclick="setSource('docx')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M6 2h9l5 5v15H6z" />
+              <path d="M15 2v5h5" />
+            </svg>
+            DOCX
+          </button>
+          <button class="source-tab" data-source="audio" onclick="setSource('audio')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M9 18V5l12-2v13" />
+              <circle cx="6" cy="18" r="3" />
+              <circle cx="18" cy="16" r="3" />
+            </svg>
+            Audio
+          </button>
+          <button class="source-tab" data-source="video" onclick="setSource('video')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M23 7l-7 5 7 5V7z" />
+              <rect x="1" y="5" width="15" height="14" rx="2" />
+            </svg>
+            Video link
+          </button>
         </div>
-        <!-- PDF -->
-        <div class="source-input" id="input-pdf" style="display:none;">
-          <div class="dropzone" onclick="document.getElementById('fileInputPdf').click()">
-            <div class="dz-icon">
-              <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 16V4M12 4l-4 4M12 4l4 4"/><path d="M4 16v3a2 2 0 002 2h12a2 2 0 002-2v-3"/></svg>
+
+        <div class="input-zone">
+          <!-- Text -->
+          <div class="source-input" id="input-text">
+            <textarea id="textInput"
+              placeholder="Paste a paragraph, lecture notes, or any text you want turned into structured study notes…"></textarea>
+          </div>
+          <!-- PDF -->
+          <div class="source-input" id="input-pdf" style="display:none;">
+            <div class="dropzone" onclick="document.getElementById('fileInputPdf').click()">
+              <div class="dz-icon">
+                <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+                  <path d="M12 16V4M12 4l-4 4M12 4l4 4" />
+                  <path d="M4 16v3a2 2 0 002 2h12a2 2 0 002-2v-3" />
+                </svg>
+              </div>
+              Drop a PDF here, or click to browse
+              <input type="file" id="fileInputPdf" accept=".pdf" style="display:none;"
+                onchange="handleFile(this,'pdf')">
+              <div class="dz-file" id="fileLabel-pdf"></div>
             </div>
-            Drop a PDF here, or click to browse
-            <input type="file" id="fileInputPdf" accept=".pdf" style="display:none;" onchange="handleFile(this,'pdf')">
-            <div class="dz-file" id="fileLabel-pdf"></div>
+          </div>
+          <!-- DOCX -->
+          <div class="source-input" id="input-docx" style="display:none;">
+            <div class="dropzone" onclick="document.getElementById('fileInputDocx').click()">
+              <div class="dz-icon">
+                <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+                  <path d="M12 16V4M12 4l-4 4M12 4l4 4" />
+                  <path d="M4 16v3a2 2 0 002 2h12a2 2 0 002-2v-3" />
+                </svg>
+              </div>
+              Drop a Word document here, or click to browse
+              <input type="file" id="fileInputDocx" accept=".docx" style="display:none;"
+                onchange="handleFile(this,'docx')">
+              <div class="dz-file" id="fileLabel-docx"></div>
+            </div>
+          </div>
+          <!-- Audio -->
+          <div class="source-input" id="input-audio" style="display:none;">
+            <div class="dropzone" onclick="document.getElementById('fileInputAudio').click()">
+              <div class="dz-icon">
+                <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+                  <path d="M12 16V4M12 4l-4 4M12 4l4 4" />
+                  <path d="M4 16v3a2 2 0 002 2h12a2 2 0 002-2v-3" />
+                </svg>
+              </div>
+              Drop an audio file here, or click to browse
+              <input type="file" id="fileInputAudio" accept="audio/*" style="display:none;"
+                onchange="handleFile(this,'audio')">
+              <div class="dz-file" id="fileLabel-audio"></div>
+            </div>
+          </div>
+          <!-- Video link -->
+          <div class="source-input" id="input-video" style="display:none;">
+            <input type="url" id="videoInput" placeholder="https://www.youtube.com/watch?v=…" />
+            <div class="time-range-row">
+              <input type="text" id="videoStartTime" placeholder="Start (optional) — e.g. 12:30" />
+              <input type="text" id="videoEndTime" placeholder="End (optional) — e.g. 25:00" />
+            </div>
+            <p class="time-range-hint">Leave both blank for the whole video. Accepts MM:SS or HH:MM:SS.</p>
           </div>
         </div>
-        <!-- DOCX -->
-        <div class="source-input" id="input-docx" style="display:none;">
-          <div class="dropzone" onclick="document.getElementById('fileInputDocx').click()">
-            <div class="dz-icon">
-              <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 16V4M12 4l-4 4M12 4l4 4"/><path d="M4 16v3a2 2 0 002 2h12a2 2 0 002-2v-3"/></svg>
-            </div>
-            Drop a Word document here, or click to browse
-            <input type="file" id="fileInputDocx" accept=".docx" style="display:none;" onchange="handleFile(this,'docx')">
-            <div class="dz-file" id="fileLabel-docx"></div>
+
+        <div class="generate-row">
+          <button class="primary" id="generateBtn" onclick="generateNotes()">Generate notes</button>
+        </div>
+      </div>
+
+     <div class="progress glass" id="progress">
+  <div class="step-row" id="step1"><div class="dot"></div><div id="step1Label">Reading source</div></div>
+  <div class="step-row" id="step2"><div class="dot"></div><div>Summarizing content in chunks</div></div>
+  <div class="step-row" id="step3"><div class="dot"></div><div>Writing structured notes</div></div>
+  <div class="progress-detail" id="progressDetail"></div>
+</div>
+
+      <div class="error-box" id="errorBox"></div>
+
+      <div class="notes-card glass" id="notesCard">
+        <div class="notes-meta">
+          <span class="label" id="chunkLabel"></span>
+          <div class="ghost-row">
+            <button class="ghost" onclick="copyNotes(this)">Copy Markdown</button>
+            <a class="ghost" href="#" download>Export .md</a>
+            <a class="ghost" href="#" download>Export .docx</a>
+            <a class="ghost" href="#" download>Export .pdf</a>
           </div>
         </div>
-        <!-- Audio -->
-        <div class="source-input" id="input-audio" style="display:none;">
-          <div class="dropzone" onclick="document.getElementById('fileInputAudio').click()">
-            <div class="dz-icon">
-              <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 16V4M12 4l-4 4M12 4l4 4"/><path d="M4 16v3a2 2 0 002 2h12a2 2 0 002-2v-3"/></svg>
-            </div>
-            Drop an audio file here, or click to browse
-            <input type="file" id="fileInputAudio" accept="audio/*" style="display:none;" onchange="handleFile(this,'audio')">
-            <div class="dz-file" id="fileLabel-audio"></div>
+        <div class="video-embed" id="notesVideoEmbed" style="display:none;"></div>
+  <div class="notes-body" id="notesBody"></div>
+        <div class="notes-body" id="notesBody"></div>
+
+        <div class="accuracy-note">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 9v4M12 17h.01" />
+            <path d="M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z" />
+          </svg>
+          <div>
+            <strong>Check these against your source before studying from them.</strong>
+            AI-generated notes can state a wrong fact confidently, or invent a
+            connection between two similarly-named things.
           </div>
         </div>
-        <!-- Video link -->
-        <div class="source-input" id="input-video" style="display:none;">
-          <input type="url" id="videoInput" placeholder="https://www.youtube.com/watch?v=…" />
+
+        <div class="ask-cta">
+          <span>Have a doubt about this? Ask it directly.</span>
+          <button class="primary" onclick="goChatWithNote()">Ask a question →</button>
         </div>
       </div>
-
-      <div class="generate-row">
-        <button class="primary" id="generateBtn" onclick="generateNotes()">Generate notes</button>
-      </div>
     </div>
 
-    <div class="progress glass" id="progress">
-      <div class="step-row" id="step1"><div class="dot"></div><div id="step1Label">Reading source</div></div>
-      <div class="step-row" id="step2"><div class="dot"></div><div>Summarizing content in chunks</div></div>
-      <div class="step-row" id="step3"><div class="dot"></div><div>Writing structured notes</div></div>
-    </div>
+    <!-- ================= CHAT PANEL ================= -->
+    <div class="panel" id="panelChat">
+      <div class="hero">
+        <h1>Ask away</h1>
+        <p>Start a new conversation, reopen an old one, or scope a chat to something you've already generated notes for.
+        </p>
+      </div>id
 
-    <div class="error-box" id="errorBox"></div>
-
-    <div class="notes-card glass" id="notesCard">
-      <div class="notes-meta">
-        <span class="label" id="chunkLabel"></span>
-        <div class="ghost-row">
-          <button class="ghost" onclick="copyNotes(this)">Copy Markdown</button>
-          <a class="ghost" href="#" download>Export .md</a>
-          <a class="ghost" href="#" download>Export .docx</a>
-          <a class="ghost" href="#" download>Export .pdf</a>
-        </div>
-      </div>
-      <div class="notes-body" id="notesBody"></div>
-
-      <div class="accuracy-note">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M12 9v4M12 17h.01"/>
-          <path d="M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z"/>
-        </svg>
-        <div>
-          <strong>Check these against your source before studying from them.</strong>
-          AI-generated notes can state a wrong fact confidently, or invent a
-          connection between two similarly-named things.
-        </div>
-      </div>
-
-      <div class="ask-cta">
-        <span>Have a doubt about this? Ask it directly.</span>
-        <button class="primary" onclick="goChatWithNote()">Ask a question →</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- ================= CHAT PANEL ================= -->
-  <div class="panel" id="panelChat">
-    <div class="hero">
-      <h1>Ask away</h1>
-      <p>Start a new conversation, reopen an old one, or scope a chat to something you've already generated notes for.</p>
-    </div>
-
-    <div class="chat-scope glass">
-      <label>CHAT</label>
-      <!-- Populated by loadChatScopes(): new-chat options, per-note options,
+      <div class="chat-scope glass">
+        <label>CHAT</label>
+        <!-- Populated by loadChatScopes(): new-chat options, per-note options,
            then past conversations. -->
-      <select id="chatScope" onchange="onScopeChange()"></select>
-      <button class="ghost" id="newChatBtn" onclick="newChat()">＋ New chat</button>
-    </div>
-
-    <div class="chat-window glass">
-      <div class="chat-toolbar">
-        <button class="ghost" onclick="copyConversation(this)">Copy conversation</button>
-      </div>
-      <div class="chat-messages" id="chatMessages">
-        <div class="chat-empty" id="chatEmpty">No messages yet — ask a question about your notes, or anything else you're studying.</div>
-      </div>
-      <div class="chat-input-row">
-        <input type="text" id="chatInput" placeholder="Type your question…" onkeydown="if(event.key==='Enter') sendChat();" />
-        <button class="send" onclick="sendChat()">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>
-        </button>
-      </div>
-    </div>
-
-    <p class="chat-disclaimer">
-      Replies can be wrong — especially about tools or terms with similar names.
-      Check anything you plan to rely on.
-    </p>
-  </div>
-
-  <!-- ================= QUESTIONS PANEL ================= -->
-  <div class="panel" id="panelQuestions">
-    <div class="hero">
-      <h1>Practice questions</h1>
-      <p>Pick something you've already generated notes for, choose how many questions you want, and go.</p>
-    </div>
-
-    <div class="glass input-card">
-      <div class="chat-scope" style="padding:0 0 14px;">
-        <label>SOURCE</label>
-        <select id="questionSource"></select>
+        <select id="chatScope" onchange="onScopeChange()"></select>
+        <button class="ghost" id="newChatBtn" onclick="newChat()">＋ New chat</button>
       </div>
 
-      <div class="learning-mode-row" style="margin-bottom:0;">
-        <span class="learning-mode-label">How many</span>
-        <div class="learning-switch glass" id="countSwitch">
-          <button class="learning-btn active" data-count="10" onclick="setQuestionCount(10)">10</button>
-          <button class="learning-btn" data-count="20" onclick="setQuestionCount(20)">20</button>
-          <button class="learning-btn" data-count="50" onclick="setQuestionCount(50)">50</button>
-          <button class="learning-btn" data-count="100" onclick="setQuestionCount(100)">100</button>
+      <div class="chat-window glass">
+        <div class="chat-toolbar">
+          <button class="ghost" onclick="copyConversation(this)">Copy conversation</button>
+        </div>
+        <div class="chat-messages" id="chatMessages">
+          <div class="chat-empty" id="chatEmpty">No messages yet — ask a question about your notes, or anything else
+            you're studying.</div>
+        </div>
+        <div class="chat-input-row">
+          <input type="text" id="chatInput" placeholder="Type your question…"
+            onkeydown="if(event.key==='Enter') sendChat();" />
+          <button class="send" onclick="sendChat()">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" />
+            </svg>
+          </button>
         </div>
       </div>
 
-      <div class="generate-row">
-        <button class="primary" id="questionsBtn" onclick="generateQuestions()">Generate questions</button>
-      </div>
+      <p class="chat-disclaimer">
+        Replies can be wrong — especially about tools or terms with similar names.
+        Check anything you plan to rely on.
+      </p>
     </div>
 
-    <div class="error-box" id="questionsError"></div>
-
-    <div class="notes-card glass" id="questionsCard">
-      <div class="notes-meta">
-        <span class="label" id="questionsLabel"></span>
-        <div class="ghost-row">
-          <button class="ghost" onclick="toggleAnswers()" id="answerToggle">Show answers</button>
-          <button class="ghost" onclick="downloadQuestions('docx')">Download .docx</button>
-          <button class="ghost" onclick="downloadQuestions('pdf')">Download .pdf</button>
-        </div>
+    <!-- ================= QUESTIONS PANEL ================= -->
+    <div class="panel" id="panelQuestions">
+      <div class="hero">
+        <h1>Practice questions</h1>
+        <p>Pick something you've already generated notes for, choose how many questions you want, and go.</p>
       </div>
-      <div class="notes-body" id="questionsBody"></div>
 
-      <div class="accuracy-note">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M12 9v4M12 17h.01"/>
-          <path d="M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z"/>
-        </svg>
-        <div>
-          <strong>Verify the answer key before relying on it.</strong>
-          These questions are generated from your notes, so any error in the
-          notes carries through to the answers.
+      <div class="glass input-card">
+        <div class="chat-scope" style="padding:0 0 14px;">
+          <label>SOURCE</label>
+          <select id="questionSource"></select>
         </div>
-      </div>
-    </div>
-  </div>
 
-  <!-- ================= LIBRARY PANEL ================= -->
-  <div class="panel" id="panelLibrary">
-    <div class="hero">
-      <h1>Your library</h1>
-      <p>Everything you've generated, newest first. Click any item to read it again.</p>
-    </div>
-
-    <div class="library-list" id="libraryList"></div>
-
-    <div class="notes-card glass" id="libraryNoteCard">
-      <div class="notes-meta">
-        <span class="label" id="libraryNoteLabel"></span>
-        <div class="ghost-row">
-          <button class="ghost" onclick="closeLibraryNote()">Close</button>
-          <a class="ghost" id="libExportMd" href="#" download>Export .md</a>
-          <a class="ghost" id="libExportDocx" href="#" download>Export .docx</a>
-          <a class="ghost" id="libExportPdf" href="#" download>Export .pdf</a>
+        <div class="learning-mode-row" style="margin-bottom:0;">
+          <span class="learning-mode-label">How many</span>
+          <div class="learning-switch glass" id="countSwitch">
+            <button class="learning-btn active" data-count="10" onclick="setQuestionCount(10)">10</button>
+            <button class="learning-btn" data-count="20" onclick="setQuestionCount(20)">20</button>
+            <button class="learning-btn" data-count="50" onclick="setQuestionCount(50)">50</button>
+            <button class="learning-btn" data-count="100" onclick="setQuestionCount(100)">100</button>
+          </div>
         </div>
-      </div>
-      <div class="notes-body" id="libraryNoteBody"></div>
 
-      <div class="accuracy-note">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M12 9v4M12 17h.01"/>
-          <path d="M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z"/>
-        </svg>
-        <div>
-          <strong>Check these against your source before studying from them.</strong>
-          AI-generated notes can state a wrong fact confidently, or invent a
-          connection between two similarly-named things.
+        <div class="generate-row">
+          <button class="primary" id="questionsBtn" onclick="generateQuestions()">Generate questions</button>
         </div>
       </div>
 
-      <div class="ask-cta">
-        <span>Have a doubt about this? Ask it directly.</span>
-        <button class="primary" onclick="askAboutLibraryNote()">Ask a question →</button>
+      <div class="error-box" id="questionsError"></div>
+
+      <div class="notes-card glass" id="questionsCard">
+        <div class="notes-meta">
+          <span class="label" id="questionsLabel"></span>
+          <div class="ghost-row">
+            <button class="ghost" onclick="toggleAnswers()" id="answerToggle">Show answers</button>
+            <button class="ghost" onclick="downloadQuestions('docx')">Download .docx</button>
+            <button class="ghost" onclick="downloadQuestions('pdf')">Download .pdf</button>
+          </div>
+        </div>
+        <div class="notes-body" id="questionsBody"></div>
+
+        <div class="accuracy-note">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 9v4M12 17h.01" />
+            <path d="M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z" />
+          </svg>
+          <div>
+            <strong>Verify the answer key before relying on it.</strong>
+            These questions are generated from your notes, so any error in the
+            notes carries through to the answers.
+          </div>
+        </div>
       </div>
     </div>
-  </div>
-</main>
 
-<footer>
-  Notewell — runs locally, on a free stack.<br>
-  AI-generated content can be wrong. Check anything important against your original source.
-</footer>
+    <!-- ================= LIBRARY PANEL ================= -->
+    <div class="panel" id="panelLibrary">
+      <div class="hero">
+        <h1>Your library</h1>
+        <p>Everything you've generated, newest first. Click any item to read it again.</p>
+      </div>
+
+      <div class="library-list" id="libraryList"></div>
+
+      <div class="notes-card glass" id="libraryNoteCard">
+        <div class="notes-meta">
+          <span class="label" id="libraryNoteLabel"></span>
+          <div class="ghost-row">
+            <button class="ghost" onclick="closeLibraryNote()">Close</button>
+            <a class="ghost" id="libExportMd" href="#" download>Export .md</a>
+            <a class="ghost" id="libExportDocx" href="#" download>Export .docx</a>
+            <a class="ghost" id="libExportPdf" href="#" download>Export .pdf</a>
+          </div>
+        </div>
+        <div class="notes-body" id="libraryNoteBody"></div>
+
+        <div class="accuracy-note">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 9v4M12 17h.01" />
+            <path d="M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z" />
+          </svg>
+          <div>
+            <strong>Check these against your source before studying from them.</strong>
+            AI-generated notes can state a wrong fact confidently, or invent a
+            connection between two similarly-named things.
+          </div>
+        </div>
+
+        <div class="ask-cta">
+          <span>Have a doubt about this? Ask it directly.</span>
+          <button class="primary" onclick="askAboutLibraryNote()">Ask a question →</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <footer>
+    Notewell — runs locally, on a free stack.<br>
+    AI-generated content can be wrong. Check anything important against your original source.
+  </footer>
 
 </body>
+
 </html>

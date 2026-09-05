@@ -24,6 +24,63 @@ const LEARNING_MODE_LABELS = {
 };
 
 /* ---------------------------------------------------------------------------
+   Video timeline — clickable timestamp chips that open the video in a new
+   tab, already seeked via YouTube's own ?t= parameter. No embedded player,
+   no iframe API, no ad-blocker fragility, no player lifecycle to manage.
+   Used by both the freshly-generated notes card and the reopened library
+   note card, via the shared renderVideoTimeline()/loadAndRenderSections()
+   pair below (containerId differs, everything else is identical).
+   --------------------------------------------------------------------------- */
+function formatChipTime(seconds){
+  seconds = Math.round(seconds);
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  const mm = h > 0 ? String(m).padStart(2, '0') : String(m);
+  const ss = String(s).padStart(2, '0');
+  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
+/* Renders the clickable chip row for one note. videoId=null, or a video
+   with no timed sections, both just clear/hide the container -- there's
+   nothing else to render without an embedded player. */
+function renderVideoTimeline(containerId, videoId, sections){
+  const container = document.getElementById(containerId);
+  if(!container) return;
+
+  if(!videoId || !sections || !sections.length){
+    container.innerHTML = '';
+    container.style.display = 'none';
+    return;
+  }
+
+  container.style.display = 'block';
+  container.innerHTML = `<div class="section-chips" id="${containerId}-chips"></div>`;
+  const chipsRow = document.getElementById(`${containerId}-chips`);
+
+  sections.forEach(s => {
+    const chip = document.createElement('a');
+    chip.className = 'section-chip';
+    chip.href = `https://www.youtube.com/watch?v=${videoId}&t=${Math.round(s.start_seconds)}s`;
+    chip.target = '_blank';
+    chip.rel = 'noopener noreferrer';
+    chip.textContent = `${formatChipTime(s.start_seconds)} · ${s.heading}`;
+    chipsRow.appendChild(chip);
+  });
+}
+
+async function loadAndRenderSections(containerId, noteId, videoId){
+  if(!videoId){ renderVideoTimeline(containerId, null, []); return; }
+  try {
+    const res = await fetch(`/api/notes/${noteId}/sections`);
+    const data = await res.json();
+    renderVideoTimeline(containerId, videoId, data.sections || []);
+  } catch(e){
+    renderVideoTimeline(containerId, null, []);
+  }
+}
+
+/* ---------------------------------------------------------------------------
    Learning Mode — a single global preference (Beginner / Medium / Expert)
    sent along with every AI request (notes, chat, questions). Persisted in
    localStorage since the app has no user accounts.
@@ -114,6 +171,8 @@ function resetUI(){
   document.getElementById('progress').classList.add('active');
   document.getElementById('errorBox').classList.remove('active');
   document.getElementById('notesCard').classList.remove('active');
+  renderVideoTimeline('notesVideoEmbed', null, []);
+  document.getElementById('progressDetail').textContent = '';
   setStep('step1',''); setStep('step2',''); setStep('step3','');
 }
 
@@ -130,12 +189,26 @@ function buildGenerateRequest(){
   if(currentSource === 'video'){
     const videoUrl = document.getElementById('videoInput').value.trim();
     if(!videoUrl) throw new Error('Paste a YouTube link first.');
+
+    const startTime = document.getElementById('videoStartTime').value.trim();
+    const endTime = document.getElementById('videoEndTime').value.trim();
+    // Require both or neither: the backend only filters when BOTH are given —
+    // sending just one would silently be ignored server-side (no error, but
+    // also no range applied), which is a confusing "why didn't my start time
+    // do anything" bug. Catching it here gives a clear message instead.
+    if(startTime && !endTime) throw new Error('Give an end time too, or leave both blank for the whole video.');
+    if(endTime && !startTime) throw new Error('Give a start time too, or leave both blank for the whole video.');
+
+    const body = { video_url: videoUrl, learning_mode: learningMode };
+    if(startTime) body.start_time = startTime;
+    if(endTime) body.end_time = endTime;
+
     return {
       url: '/api/generate-notes',
       options: {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ video_url: videoUrl, learning_mode: learningMode }),
+        body: JSON.stringify(body),
       },
     };
   }
@@ -187,9 +260,11 @@ async function generateNotes(){
   btn.textContent = "Working…";
   setStep('step1','active');
 
-  // The API returns everything in one response (no progress events), so this
-  // just nudges the step indicator along while the request is in flight.
-  const stepTimer = setTimeout(() => {
+  const isVideoJob = currentSource === 'video';
+
+  // Non-video sources are still one synchronous request/response, unchanged
+  // from before -- only the video path is job-based now.
+  const stepTimer = isVideoJob ? null : setTimeout(() => {
     setStep('step1','done'); setStep('step2','active');
   }, 1200);
 
@@ -201,26 +276,26 @@ async function generateNotes(){
       throw new Error((data && data.detail) || `Request failed (${res.status}).`);
     }
 
-    clearTimeout(stepTimer);
-    setStep('step1','done'); setStep('step2','done'); setStep('step3','done');
+    if(isVideoJob){
+      const job = await pollGenerationJob(data.job_id);
+      await showFinishedNote(job.note_id);
+    } else {
+      clearTimeout(stepTimer);
+      setStep('step1','done'); setStep('step2','done'); setStep('step3','done');
+      lastMarkdown = data.notes_markdown;
+      lastNoteId = data.note_id;
+      renderNoteMeta(data);
+      document.getElementById('notesBody').innerHTML = marked.parse(lastMarkdown);
+      wireExportLinks(lastNoteId);
+      loadAndRenderSections('notesVideoEmbed', lastNoteId, data.video_id);
+      document.getElementById('notesCard').classList.add('active');
+      document.getElementById('progress').classList.remove('active');
+    }
 
-    lastMarkdown = data.notes_markdown;
-    lastNoteId = data.note_id;
-
-    const originLabel = ORIGIN_LABELS[data.transcript_origin] || data.transcript_origin;
-    const modeLabel = LEARNING_MODE_LABELS[data.learning_mode] || 'Medium';
-    document.getElementById('chunkLabel').textContent =
-      `${data.num_chunks} chunk${data.num_chunks === 1 ? '' : 's'} · ${originLabel} · ${modeLabel} mode`;
-    document.getElementById('notesBody').innerHTML = marked.parse(lastMarkdown);
-    wireExportLinks(lastNoteId);
-    document.getElementById('notesCard').classList.add('active');
-    document.getElementById('progress').classList.remove('active');
-
-    // Questions dropdown caches itself on first load; clear it so the note
-    // we just created shows up next time that panel opens.
     document.getElementById('questionSource').innerHTML = '';
   } catch(e){
-    clearTimeout(stepTimer);
+    if(stepTimer) clearTimeout(stepTimer);
+    document.getElementById('notesCard').classList.remove('active');
     showError(e.message || 'Something went wrong generating notes.');
   } finally {
     btn.disabled = false;
@@ -754,6 +829,7 @@ async function openLibraryNote(noteId){
       `${data.num_chunks} chunk${data.num_chunks === 1 ? '' : 's'} · ${origin} · ${mode} mode`;
 
     body.innerHTML = marked.parse(data.structured_markdown);
+    loadAndRenderSections('libraryVideoEmbed', noteId, data.video_id);
 
     document.getElementById('libExportMd').href   = `/api/export/${noteId}/markdown`;
     document.getElementById('libExportDocx').href = `/api/export/${noteId}/docx`;
@@ -850,6 +926,111 @@ function copyConversation(btn){
     .map(m => `**${m.role === 'user' ? 'You' : 'Notewell'}:**\n\n${m.content}`)
     .join('\n\n---\n\n');
   copyText(text, btn, 'Copied thread');
+}
+
+/* ---------------------------------------------------------------------------
+   Async video job polling (Path B) -- video generation returns a job_id
+   instead of the finished note; this polls, renders streamed sections as
+   they arrive, and shows live stage + ETA.
+   --------------------------------------------------------------------------- */
+const JOB_STAGE_LABELS = {
+  transcribing: 'Transcribing audio',
+  writing_sections: 'Writing notes section by section',
+  finalizing: 'Finalizing your notes',
+  done: 'Done',
+};
+
+function formatEta(seconds){
+  if(seconds == null) return '';
+  if(seconds < 60) return `~${Math.max(1, Math.round(seconds))}s left`;
+  return `~${Math.round(seconds / 60)} min left`;
+}
+
+function renderJobProgress(job){
+  setStep('step1', job.stage === 'transcribing' ? 'active' : 'done');
+  setStep('step2',
+    job.stage === 'writing_sections' ? 'active' :
+    (job.stage === 'finalizing' || job.stage === 'done' ? 'done' : '')
+  );
+  setStep('step3', job.stage === 'finalizing' ? 'active' : (job.stage === 'done' ? 'done' : ''));
+
+  let detail = JOB_STAGE_LABELS[job.stage] || job.stage;
+  if(job.stage === 'writing_sections' && job.total_chunks){
+    detail += ` (${job.completed_chunks || 0}/${job.total_chunks})`;
+  }
+  const eta = formatEta(job.estimated_seconds_remaining);
+  document.getElementById('progressDetail').textContent = eta ? `${detail} · ${eta}` : detail;
+}
+
+/* Renders whatever sections have streamed in so far -- real content, not a
+   percentage bar. Re-parses the whole joined markdown each poll; cheap
+   enough at this size, avoids incremental-DOM-diff complexity. */
+function renderStreamedSections(sections){
+  if(!sections || !sections.length) return;
+  const combined = sections.map(s => s.markdown_text).join('\n\n');
+  document.getElementById('notesBody').innerHTML = marked.parse(combined);
+  document.getElementById('chunkLabel').textContent =
+    `Writing notes… ${sections.length} section${sections.length === 1 ? '' : 's'} so far`;
+}
+
+function pollGenerationJob(jobId){
+  const POLL_INTERVAL_MS = 2000;
+  document.getElementById('notesCard').classList.add('active');   // show it now -- sections stream in below
+
+  return new Promise((resolve, reject) => {
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/jobs/${jobId}`);
+        const job = await res.json().catch(() => null);
+        if(!res.ok){
+          reject(new Error((job && job.detail) || `Job lookup failed (${res.status}).`));
+          return;
+        }
+
+        renderJobProgress(job);
+
+        if(job.status === 'failed'){
+          reject(new Error(job.error || 'Note generation failed.'));
+          return;
+        }
+        if(job.status === 'done'){
+          resolve(job);
+          return;
+        }
+
+        renderStreamedSections(job.sections);
+        setTimeout(poll, POLL_INTERVAL_MS);
+      } catch(e){
+        reject(e);
+      }
+    };
+    poll();
+  });
+}
+
+function renderNoteMeta(data){
+  const originLabel = ORIGIN_LABELS[data.transcript_origin] || data.transcript_origin;
+  const modeLabel = LEARNING_MODE_LABELS[data.learning_mode] || 'Medium';
+  document.getElementById('chunkLabel').textContent =
+    `${data.num_chunks} chunk${data.num_chunks === 1 ? '' : 's'} · ${originLabel} · ${modeLabel} mode`;
+}
+
+/* Once a video job finishes, the polished final note (with opening/closing
+   sections the streamed job.sections never included) lives in the DB, not
+   in the job response -- fetch it the same way the Library panel does. */
+async function showFinishedNote(noteId){
+  const res = await fetch(`/api/notes/${noteId}`);
+  const data = await res.json().catch(() => null);
+  if(!res.ok) throw new Error((data && data.detail) || 'Could not load the finished note.');
+
+  lastMarkdown = data.structured_markdown;
+  lastNoteId = noteId;
+  renderNoteMeta(data);
+  document.getElementById('notesBody').innerHTML = marked.parse(lastMarkdown);
+  wireExportLinks(noteId);
+  loadAndRenderSections('notesVideoEmbed', noteId, data.video_id);
+  document.getElementById('notesCard').classList.add('active');
+  document.getElementById('progress').classList.remove('active');
 }
 /* ---------------------------------------------------------------------------
    Bootstrap
