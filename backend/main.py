@@ -24,7 +24,6 @@ import tempfile
 import textwrap
 import threading
 import xml.etree.ElementTree as ET
-from typing import List, Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -44,11 +43,17 @@ from learning_modes import (
     DEFAULT_LEARNING_MODE,
     apply_learning_mode,
     normalize_learning_mode,
+    notes_opening_structure,
+    notes_section_structure,
+    notes_closing_structure,
     notes_structure,
     question_style,
 )
 from transcription import transcribe_video_with_whisper, transcribe_audio
-
+from timeutils import parse_timestamp, format_timestamp, pick_interval_seconds
+from datetime import datetime, timezone
+from typing import List, Optional, Callable
+import time
 
 # ---------------------------------------------------------------------------
 # Setup
@@ -75,7 +80,7 @@ if not GROQ_API_KEY:
     )
 
 client = Groq(api_key=GROQ_API_KEY)
-GROQ_MODEL = "llama-3.3-70b-versatile"  # free tier, fast, good quality
+GROQ_MODEL = "openai/gpt-oss-120b"  # free tier, fast, good quality
 
 app = FastAPI(title="Video-to-Notes AI")
 
@@ -115,6 +120,8 @@ def _backfill_rag_index() -> None:
 class NotesRequest(BaseModel):
     video_url: str
     learning_mode: Optional[str] = DEFAULT_LEARNING_MODE
+    start_time: Optional[str] = None   # "12:30", "1:02:00", or plain seconds; parsed below
+    end_time: Optional[str] = None
 
 
 class TextNotesRequest(BaseModel):
@@ -165,48 +172,121 @@ def fetch_video_title(video_url: str, fallback: str) -> str:
         return fallback
 
 
-def fetch_transcript(video_id: str, video_url: str) -> tuple[str, str]:
+def fetch_transcript(
+    video_id: str, video_url: str,
+    start_seconds: Optional[float] = None, end_seconds: Optional[float] = None,
+    progress_callback: Optional[Callable[[float, float], None]] = None,
+) -> tuple[List[dict], str]:
     """Try YouTube captions first (free + instant), fall back to Whisper.
 
-    Returns (transcript_text, origin) where origin is "captions" or "whisper".
+    Returns (segments, origin) where segments is a list of
+    {"text": str, "start": float, "duration": float} dicts (NOT a flattened
+    string anymore — V1 threw this timing away, V2 needs it for clickable
+    timestamps) and origin is "captions" or "whisper".
+
+    If start_seconds/end_seconds are given, the returned segments are limited
+    to that range. For captions this is a simple filter (the full transcript
+    is already fetched — cheap). For Whisper, the range is pushed down into
+    transcribe_video_with_whisper() so the video isn't fully transcribed and
+    then discarded.
     """
     try:
         print("Trying YouTube captions...")
         transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
-        transcript_text = " ".join(
-            item.text if hasattr(item, "text") else item["text"]
+        segments = [
+            {
+                "text": item.text if hasattr(item, "text") else item["text"],
+                "start": item.start if hasattr(item, "start") else item["start"],
+                "duration": item.duration if hasattr(item, "duration") else item.get("duration", 0.0),
+            }
             for item in transcript_list
-        )
-        if transcript_text.strip():
+        ]
+
+        if start_seconds is not None and end_seconds is not None:
+            segments = [s for s in segments if start_seconds <= s["start"] < end_seconds]
+
+        if segments and any(s["text"].strip() for s in segments):
             print("Transcript fetched from YouTube captions.")
-            return transcript_text, "captions"
+            return segments, "captions"
 
     except (TranscriptsDisabled, NoTranscriptFound, ET.ParseError) as e:
         print(f"YouTube captions unavailable: {e}")
     except Exception as e:
-        # Catch unexpected YouTube API issues
         print(f"Unexpected transcript error: {e}")
 
     print("Falling back to Whisper transcription...")
-    result = transcribe_video_with_whisper(video_url)
+    result = transcribe_video_with_whisper(
+        video_url, start_seconds=start_seconds, end_seconds=end_seconds,
+        progress_callback=progress_callback,
+    )
+    
 
-    if not result.text.strip():
+    if not result.segments:
         raise HTTPException(
             status_code=422,
             detail="Whisper transcription produced no speech text for this video.",
         )
 
+    # Normalize to the same {"text", "start", "duration"} shape captions use
+    # above -- Whisper's segments carry "end" instead of "duration" (see
+    # transcription.py). Converting once here means chunk_by_time() and
+    # generate_and_save() never need to know or care which source produced
+    # the segments they're chunking.
+    segments = [
+        {"text": s["text"], "start": s["start"], "duration": s["end"] - s["start"]}
+        for s in result.segments
+    ]
+
     print("Transcript generated using Whisper.")
-    return result.text, "whisper"
+    return segments, "whisper"
 
+def chunk_by_time(segments: List[dict], interval_seconds: float) -> List[dict]:
+    """
+    Buckets timed segments (from fetch_transcript) into fixed-width time
+    windows instead of fixed word counts. Returns
+    [{"start": float, "end": float, "text": str}, ...] — one dict per window,
+    in order, with no gaps or overlaps.
 
-def chunk_text(text: str, max_words: int = 900) -> List[str]:
-    """Split the cleaned transcript into LLM-sized chunks (map-reduce)."""
-    words = text.split()
-    return [
-        " ".join(words[i:i + max_words])
-        for i in range(0, len(words), max_words)
-    ] or [text]
+    Replaces chunk_text() for anything that has real timing (video sources).
+    chunk_text() is kept as-is for the text/pdf/docx paths, which have no
+    timestamps to preserve.
+    """
+    if not segments:
+        return []
+
+    chunks = []
+    window_start = segments[0]["start"]
+    window_end = window_start + interval_seconds
+    current_texts: List[str] = []
+    current_actual_start = segments[0]["start"]
+    last_end = current_actual_start
+
+    for seg in segments:
+        seg_start = seg["start"]
+        seg_end = seg_start + seg.get("duration", 0.0)
+
+        if seg_start >= window_end and current_texts:
+            chunks.append({
+                "start": current_actual_start,
+                "end": last_end,
+                "text": " ".join(current_texts),
+            })
+            window_start = seg_start
+            window_end = window_start + interval_seconds
+            current_texts = []
+            current_actual_start = seg_start
+
+        current_texts.append(seg["text"])
+        last_end = seg_end
+
+    if current_texts:
+        chunks.append({
+            "start": current_actual_start,
+            "end": last_end,
+            "text": " ".join(current_texts),
+        })
+
+    return chunks
 
 
 def call_groq(prompt: str, system: str) -> str:
@@ -221,17 +301,30 @@ def call_groq(prompt: str, system: str) -> str:
     return response.choices[0].message.content
 
 
-def summarize_chunk(chunk: str, index: int, total: int, learning_mode: str) -> str:
-    """Map step: summarize one transcript chunk.
-
-    Deliberately NOT mode-aware. Simplifying here loses detail the reduce
-    step can never recover -- Expert notes came out vaguer than Medium
-    because specifics were dropped at this stage. Keep everything; let
-    build_notes() decide what the reader sees.
+def summarize_chunk(
+    chunk: str,
+    index: int,
+    total: int,
+    learning_mode: str,
+    start: Optional[float] = None,
+    end: Optional[float] = None,
+) -> str:
     """
+    Map step: summarize one transcript chunk.
+
+    start/end (seconds) are purely informational context handed to the model —
+    NOT a formatting instruction. The model is told what time range this chunk
+    covers so its summary can reference "early on" / "toward the end" type
+    framing if natural; the actual timestamped heading in the final notes is
+    assembled in Python (build_notes), not generated by the model.
+    """
+    time_context = ""
+    if start is not None and end is not None:
+        time_context = f"This section covers {format_timestamp(start)}–{format_timestamp(end)} of the source. "
+
     prompt = (
-        f"This is part {index + 1} of {total} of a transcript. Summarize the key "
-        f"points concisely. Preserve every proper noun, tool name, version "
+        f"This is part {index + 1} of {total} of a transcript. {time_context}"
+        f"Summarize the key points concisely. Preserve every proper noun, tool name, version "
         f"number, and figure exactly as stated — later stages depend on "
         f"them:\n\n{chunk}"
     )
@@ -241,6 +334,150 @@ def summarize_chunk(chunk: str, index: int, total: int, learning_mode: str) -> s
         "a general paraphrase."
     )
     return call_groq(prompt, system=system)
+
+
+def write_section(chunk_text: str, index: int, total: int, learning_mode: str, start: float, end: float) -> str:
+    """Writes ONE final, ready-to-render H2 section directly from this chunk's
+    raw text -- not an intermediate summary. Path B streams this straight to
+    the user the moment it's written, so there's no later blending step that
+    could fix up a rough draft; it has to be right the first time."""
+    prompt = textwrap.dedent(f"""
+        {notes_section_structure(learning_mode)}
+
+        This is part {index + 1} of {total} of the source. Use exactly this
+        bracketed time range in your heading: [{format_timestamp(start)}\u2013{format_timestamp(end)}]
+
+        Source text for this section:
+        {chunk_text}
+    """).strip()
+    system = apply_learning_mode(
+        "You write one final, polished section of Markdown study notes -- not a summary, not a draft.",
+        learning_mode,
+    )
+    return call_groq(prompt, system=system)
+
+
+def write_opening(sections_markdown: str, learning_mode: str) -> str:
+    prompt = textwrap.dedent(f"""
+        {notes_opening_structure(learning_mode)}
+
+        Finished sections:
+        {sections_markdown}
+    """).strip()
+    system = apply_learning_mode(
+        "You write the opening of a set of Markdown study notes, given the notes' already-finished sections.",
+        learning_mode,
+    )
+    return call_groq(prompt, system=system)
+
+
+def write_closing(sections_markdown: str, learning_mode: str) -> str:
+    prompt = textwrap.dedent(f"""
+        {notes_closing_structure(learning_mode)}
+
+        Finished sections:
+        {sections_markdown}
+    """).strip()
+    system = apply_learning_mode(
+        "You write the closing of a set of Markdown study notes, given the notes' already-finished sections.",
+        learning_mode,
+    )
+    return call_groq(prompt, system=system)
+
+def _run_video_generation_job(
+    *,
+    job_id: int,
+    video_id: str,
+    video_url: str,
+    title: str,
+    source_type: str,
+    learning_mode: str,
+    start_seconds: Optional[float],
+    end_seconds: Optional[float],
+) -> None:
+    """
+    Runs the full video/audio notes pipeline in a background thread. Streams
+    each section into generation_job_sections the moment it's written (Path
+    B), so the frontend's poll can render real content incrementally instead
+    of waiting for the whole note. Also reports live transcription progress
+    via a throttled callback passed into fetch_transcript().
+    """
+    try:
+        last_report_time = [0.0]   # mutable holder so the closure can update it
+
+        def _report_progress(processed: float, total: float) -> None:
+            now = time.monotonic()
+            # Throttle: faster-whisper can yield many segments per second
+            # during short/silent stretches -- writing to SQLite on every
+            # single one would be wasteful. Once every ~2s of wall-clock
+            # time is plenty for a progress bar a human is glancing at.
+            if now - last_report_time[0] < 2.0 and processed < total:
+                return
+            last_report_time[0] = now
+            db.update_job_progress(job_id, processed_seconds=processed, total_duration_seconds=total)
+
+        segments, origin = fetch_transcript(
+            video_id, video_url, start_seconds, end_seconds, progress_callback=_report_progress
+        )
+
+        if not segments:
+            db.mark_job_failed(job_id, "No transcript content found to summarize.")
+            return
+
+        covered_start = segments[0]["start"]
+        covered_end = segments[-1]["start"] + segments[-1]["duration"]
+        total_duration = covered_end - covered_start
+        interval_seconds = pick_interval_seconds(total_duration)
+        chunks = chunk_by_time(segments, interval_seconds)
+
+        db.update_job_progress(
+            job_id,
+            stage="writing_sections",
+            total_duration_seconds=total_duration,
+            processed_seconds=total_duration,   # transcription is fully done by this point
+            total_chunks=len(chunks),
+        )
+
+        section_texts = []
+        for i, c in enumerate(chunks):
+            section_md = write_section(c["text"], i, len(chunks), learning_mode, c["start"], c["end"])
+            section_texts.append(section_md)
+            db.add_job_section(job_id, i, c["start"], c["end"], section_md)
+            db.update_job_progress(job_id, completed_chunks=i + 1)
+
+        db.update_job_progress(job_id, stage="finalizing")
+
+        sections_combined = "\n\n".join(section_texts)
+        opening_md = write_opening(sections_combined, learning_mode)
+        closing_md = write_closing(sections_combined, learning_mode)
+        notes_markdown = f"{opening_md}\n\n{sections_combined}\n\n{closing_md}"
+
+        note_id = db.save_note(
+            title=title,
+            source_url=video_url,
+            video_id=video_id,
+            markdown=notes_markdown,
+            num_chunks=len(chunks),
+            transcript_origin=origin,
+            source_type=source_type,
+            learning_mode=learning_mode,
+            range_start_seconds=segments[0]["start"],
+            range_end_seconds=segments[-1]["start"] + segments[-1]["duration"],
+        )
+
+        timed_sections = export.extract_timed_sections(notes_markdown)
+        db.save_note_sections(note_id, timed_sections)
+
+        try:
+            rag.reindex_note_clean(note_id, title, notes_markdown)
+        except Exception as exc:
+            print(f"[rag] failed to index note {note_id}: {exc}")
+
+        db.mark_job_done(job_id, note_id)
+
+    except Exception as exc:
+        print(f"[job {job_id}] failed: {exc}")
+        db.mark_job_failed(job_id, str(exc))
 
 def build_notes(chunk_summaries: List[str], learning_mode: str) -> str:
     """Reduce step: combine chunk summaries into final structured Markdown notes.
@@ -274,7 +511,8 @@ def build_notes(chunk_summaries: List[str], learning_mode: str) -> str:
 
 def generate_and_save(
     *,
-    text: str,
+    text: Optional[str] = None,
+    segments: Optional[List[dict]] = None,
     title: str,
     source_url: str,
     video_id: Optional[str],
@@ -282,16 +520,49 @@ def generate_and_save(
     origin: str,
     learning_mode: Optional[str] = None,
 ) -> dict:
-    if not text.strip():
-        raise HTTPException(status_code=422, detail="No text content found to summarize.")
-
+    """
+    Exactly one of `text` or `segments` is given:
+      - `segments` (video/audio sources): timed [{"text","start","duration"}] from
+        fetch_transcript — chunked by TIME so notes get real timestamped headings.
+      - `text` (pasted text/pdf/docx): no timing exists for these sources, so they
+        keep the original word-count chunking. Nothing to timestamp here.
+    """
     learning_mode = normalize_learning_mode(learning_mode)
 
-    chunks = chunk_text(text)
-    chunk_summaries = [
-        summarize_chunk(c, i, len(chunks), learning_mode) for i, c in enumerate(chunks)
-    ]
+    if segments is not None:
+        if not segments:
+            raise HTTPException(status_code=422, detail="No transcript content found to summarize.")
+
+        covered_start = segments[0]["start"]
+        covered_end = segments[-1]["start"] + segments[-1]["duration"]
+        interval_seconds = pick_interval_seconds(covered_end - covered_start)
+
+        chunks = chunk_by_time(segments, interval_seconds)
+        chunk_summaries = [
+            # Prefix with the time label the reduce step needs to build headings from —
+            # the model isn't asked to invent this, it's handed the real computed range.
+            f"[{format_timestamp(c['start'])}\u2013{format_timestamp(c['end'])}] "
+            + summarize_chunk(c["text"], i, len(chunks), learning_mode, start=c["start"], end=c["end"])
+            for i, c in enumerate(chunks)
+        ]
+    else:
+        if not text or not text.strip():
+            raise HTTPException(status_code=422, detail="No text content found to summarize.")
+
+        chunks = chunk_text(text)
+        chunk_summaries = [
+            summarize_chunk(c, i, len(chunks), learning_mode) for i, c in enumerate(chunks)
+        ]
+
     notes_markdown = build_notes(chunk_summaries, learning_mode)
+
+    # Reuse the range already computed for chunking above (covered_start/
+    # covered_end only exist inside the `if segments is not None` branch, so
+    # this is where they collapse to None for the text/pdf/docx path).
+    range_start_seconds = segments[0]["start"] if segments is not None else None
+    range_end_seconds = (
+        segments[-1]["start"] + segments[-1]["duration"] if segments is not None else None
+    )
 
     note_id = db.save_note(
         title=title,
@@ -302,13 +573,19 @@ def generate_and_save(
         transcript_origin=origin,
         source_type=source_type,
         learning_mode=learning_mode,
+        range_start_seconds=range_start_seconds,
+        range_end_seconds=range_end_seconds,
     )
 
-    # Embed + store this note's chunks so chat can retrieve them instead of
-    # pasting the whole note into every prompt. Indexing failure shouldn't fail
-    # note generation itself -- chat falls back to whole-note context.
+    # Pull every "[MM:SS–MM:SS] Title" heading the model produced into
+    # structured rows, so the frontend can build a clickable timeline without
+    # regex-parsing markdown itself. No-op (empty list) for untimed sources —
+    # extract_timed_sections() only matches that exact bracketed shape.
+    timed_sections = export.extract_timed_sections(notes_markdown)
+    db.save_note_sections(note_id, timed_sections)
+
     try:
-        rag.index_note(note_id, title, notes_markdown)
+        rag.reindex_note_clean(note_id, title, notes_markdown)
     except Exception as exc:
         print(f"[rag] failed to index note {note_id}: {exc}")
 
@@ -330,25 +607,93 @@ def generate_and_save(
 
 @app.post("/api/generate-notes")
 def generate_notes(req: NotesRequest):
-    """Source: pasted YouTube link. Tries captions first, falls back to Whisper."""
+    """Source: pasted YouTube link. Returns a job_id immediately -- the
+    actual pipeline runs in a background thread. Poll GET /api/jobs/{job_id}
+    for progress, streamed sections, and the final note_id."""
     try:
         video_id = extract_video_id(req.video_url)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    transcript, origin = fetch_transcript(video_id, req.video_url)
+    start_seconds = end_seconds = None
+    if req.start_time is not None:
+        try:
+            start_seconds = parse_timestamp(req.start_time)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    if req.end_time is not None:
+        try:
+            end_seconds = parse_timestamp(req.end_time)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    if start_seconds is not None and end_seconds is not None and start_seconds >= end_seconds:
+        raise HTTPException(status_code=400, detail="start_time must be before end_time.")
+
     title = fetch_video_title(req.video_url, fallback=video_id)
+    learning_mode = normalize_learning_mode(req.learning_mode)
 
-    return generate_and_save(
-        text=transcript,
-        title=title,
-        source_url=req.video_url,
-        video_id=video_id,
-        source_type="video",
-        origin=origin,
-        learning_mode=req.learning_mode,
-    )
+    job_id = db.create_generation_job(total_duration_seconds=None)
 
+    threading.Thread(
+        target=_run_video_generation_job,
+        kwargs=dict(
+            job_id=job_id, video_id=video_id, video_url=req.video_url, title=title,
+            source_type="video", learning_mode=learning_mode,
+            start_seconds=start_seconds, end_seconds=end_seconds,
+        ),
+        daemon=True,
+    ).start()
+
+    return {"job_id": job_id}
+
+def _estimate_seconds_remaining(job: dict) -> Optional[int]:
+    """
+    Computed fresh on every poll, never stored (it's derived). Two different
+    units depending on stage, so two different formulas:
+
+    - "transcribing": ratio of audio processed vs total. Only meaningful once
+      transcription.py reports processed_seconds incrementally (not yet true
+      -- see the caveat in _run_video_generation_job). Until then, falls back
+      to a rough guess (assume ~real-time speed), clearly not a measurement.
+    - "writing_sections": ratio of chunks completed vs total, using
+      stage_started_at so time spent transcribing doesn't skew the rate.
+    - anything else: no estimate.
+    """
+    if job["status"] != "running":
+        return None
+    stage_started = job.get("stage_started_at") or job.get("started_at")
+    if not stage_started:
+        return None
+    elapsed = (datetime.now(timezone.utc) - datetime.fromisoformat(stage_started)).total_seconds()
+
+    if job["stage"] == "transcribing":
+        total = job.get("total_duration_seconds")
+        processed = job.get("processed_seconds") or 0
+        if not total:
+            return None
+        if processed <= 0:
+            return int(total)   # rough guess only -- no live signal yet
+        rate = elapsed / processed
+        return round(rate * max(total - processed, 0))
+
+    if job["stage"] == "writing_sections":
+        total_chunks = job.get("total_chunks") or 0
+        completed = job.get("completed_chunks") or 0
+        if not total_chunks or completed <= 0:
+            return None
+        rate = elapsed / completed
+        return round(rate * max(total_chunks - completed, 0))
+
+    return None
+
+
+@app.get("/api/jobs/{job_id}")
+def get_generation_job(job_id: int):
+    job = db.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    job["estimated_seconds_remaining"] = _estimate_seconds_remaining(job)
+    return job
 
 @app.post("/api/generate-notes/text")
 def generate_notes_from_text(req: TextNotesRequest):
@@ -464,6 +809,18 @@ async def generate_notes_from_audio(
         origin="whisper",
         learning_mode=learning_mode,
     )
+
+
+@app.get("/api/notes/{note_id}/sections")
+def get_note_sections(note_id: int):
+    """Structured timeline data for one note — [{"order_index","start_seconds",
+    "end_seconds","heading"}, ...]. Empty list for untimed sources (text/pdf/docx)
+    or notes generated before this feature existed."""
+    note = db.get_note(note_id)
+    if not note:
+        raise HTTPException(status_code=404, detail="Note not found.")
+    return {"sections": db.get_note_sections(note_id)}
+
 
 
 # ---------------------------------------------------------------------------

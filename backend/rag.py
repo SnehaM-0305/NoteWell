@@ -240,3 +240,19 @@ def query(query_text: str, top_k: int = 5, note_id: Optional[int] = None) -> Lis
             }
         )
     return hits
+
+def reindex_note_clean(note_id: int, title: str, markdown_text: str) -> int:
+    """
+    Delete-then-upsert: wipes ALL existing chunks for this note before
+    reindexing, so a shortened note can't leave stale, orphaned chunks behind
+    that index_note()'s upsert (keyed on deterministic note{id}-chunk{i} ids)
+    would otherwise miss. If a note shrinks from 8 chunks to 5, index_note()
+    alone would overwrite chunks 0-4 and silently leave 5-7 sitting in Chroma
+    forever -- still retrievable by chat, now describing content that no
+    longer exists in the note.
+
+    Use this instead of index_note() anywhere a note might already exist
+    before this call (fresh generation, section regenerate, manual edit).
+    """
+    delete_note(note_id)
+    return index_note(note_id, title, markdown_text)

@@ -70,6 +70,58 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS note_sections (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    note_id       INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    order_index   INTEGER NOT NULL,
+    start_seconds REAL NOT NULL,
+    end_seconds   REAL NOT NULL,
+    heading       TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS import_jobs (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    playlist_url  TEXT NOT NULL,
+    status        TEXT NOT NULL DEFAULT 'running',   -- running/done/failed
+    total         INTEGER NOT NULL,
+    completed     INTEGER NOT NULL DEFAULT 0,
+    failed        INTEGER NOT NULL DEFAULT 0,
+    created_at    TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS import_job_items (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id      INTEGER NOT NULL REFERENCES import_jobs(id) ON DELETE CASCADE,
+    video_url   TEXT NOT NULL,
+    note_id     INTEGER,                            -- filled in on success
+    status      TEXT NOT NULL DEFAULT 'pending',     -- pending/done/failed
+    error       TEXT
+);
+CREATE TABLE IF NOT EXISTS generation_jobs (
+    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+    status                 TEXT NOT NULL DEFAULT 'running',
+    stage                  TEXT NOT NULL DEFAULT 'transcribing',
+    stage_started_at       TEXT,                                  
+    total_duration_seconds REAL,
+    processed_seconds      REAL NOT NULL DEFAULT 0,
+    total_chunks           INTEGER,
+    completed_chunks       INTEGER NOT NULL DEFAULT 0,
+    note_id                INTEGER,
+    error                  TEXT,
+    started_at             TEXT NOT NULL,
+    updated_at             TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS generation_job_sections (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id        INTEGER NOT NULL REFERENCES generation_jobs(id) ON DELETE CASCADE,
+    order_index   INTEGER NOT NULL,
+    start_seconds REAL,
+    end_seconds   REAL,
+    markdown_text TEXT NOT NULL,   -- the FINAL formatted section, ready to render -- not a rough summary
+    created_at    TEXT NOT NULL
+);
 """
 
 
@@ -89,9 +141,16 @@ def _migrate(conn: sqlite3.Connection) -> None:
     existing_cols = {row["name"] for row in conn.execute("PRAGMA table_info(notes)")}
     if "learning_mode" not in existing_cols:
         conn.execute("ALTER TABLE notes ADD COLUMN learning_mode TEXT NOT NULL DEFAULT 'medium'")
+
     msg_cols = {row["name"] for row in conn.execute("PRAGMA table_info(chat_messages)")}
     if "session_id" not in msg_cols:
         conn.execute("ALTER TABLE chat_messages ADD COLUMN session_id INTEGER")
+
+    src_cols = {row["name"] for row in conn.execute("PRAGMA table_info(sources)")}
+    if "range_start_seconds" not in src_cols:
+        conn.execute("ALTER TABLE sources ADD COLUMN range_start_seconds REAL")
+    if "range_end_seconds" not in src_cols:
+        conn.execute("ALTER TABLE sources ADD COLUMN range_end_seconds REAL")
 
 
 @contextmanager
@@ -99,6 +158,7 @@ def get_conn():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 5000")  
     try:
         yield conn
         conn.commit()
@@ -120,13 +180,16 @@ def save_note(
     transcript_origin: str,
     source_type: str = "video",
     learning_mode: str = "medium",
+    range_start_seconds: Optional[float] = None,
+    range_end_seconds: Optional[float] = None,
 ) -> int:
     """Insert a source + its generated note. Returns the new note's id."""
     with get_conn() as conn:
         cur = conn.execute(
-            "INSERT INTO sources (type, title, source_url, video_id, added_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (source_type, title, source_url, video_id, _now()),
+            "INSERT INTO sources (type, title, source_url, video_id, added_at, "
+            "range_start_seconds, range_end_seconds) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (source_type, title, source_url, video_id, _now(),
+             range_start_seconds, range_end_seconds),
         )
         source_id = cur.lastrowid
 
@@ -294,3 +357,114 @@ def delete_note(note_id: int) -> bool:
         conn.execute("DELETE FROM chat_messages WHERE scope = ?", (f"note:{note_id}",))
         conn.execute("DELETE FROM sources WHERE id = ?", (row["source_id"],))
         return True
+
+def save_note_sections(note_id: int, sections: list[dict]) -> None:
+    """
+    sections: [{"start_seconds": float, "end_seconds": float, "heading": str}, ...]
+    in the order they appear in the note. Called once, right after a note (or a
+    regenerated section) is saved — replaces any existing rows for this note_id
+    first, so re-running never leaves stale/duplicate section rows behind.
+    """
+    with get_conn() as conn:
+        conn.execute("DELETE FROM note_sections WHERE note_id = ?", (note_id,))
+        conn.executemany(
+            "INSERT INTO note_sections (note_id, order_index, start_seconds, end_seconds, heading) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [
+                (note_id, i, s["start_seconds"], s["end_seconds"], s["heading"])
+                for i, s in enumerate(sections)
+            ],
+        )
+
+
+def get_note_sections(note_id: int) -> list[dict]:
+    """Ordered section list for one note — the frontend's timeline/chip data."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT order_index, start_seconds, end_seconds, heading FROM note_sections "
+            "WHERE note_id = ? ORDER BY order_index ASC",
+            (note_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+def create_generation_job(total_duration_seconds: Optional[float] = None) -> int:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO generation_jobs (status, stage, stage_started_at, total_duration_seconds, "
+            "processed_seconds, completed_chunks, started_at, updated_at) "
+            "VALUES ('running', 'transcribing', ?, ?, 0, 0, ?, ?)",
+            (_now(), total_duration_seconds, _now(), _now()),
+        )
+        return cur.lastrowid
+
+
+def update_job_progress(
+    job_id: int, *, stage: Optional[str] = None, processed_seconds: Optional[float] = None,
+    total_duration_seconds: Optional[float] = None, total_chunks: Optional[int] = None,
+    completed_chunks: Optional[int] = None,
+) -> None:
+    fields, values = [], []
+    if stage is not None:
+        fields.append("stage = ?"); values.append(stage)
+        fields.append("stage_started_at = ?"); values.append(_now())   # NEW
+    if processed_seconds is not None:
+        fields.append("processed_seconds = ?"); values.append(processed_seconds)
+    if total_duration_seconds is not None:
+        fields.append("total_duration_seconds = ?"); values.append(total_duration_seconds)
+    if total_chunks is not None:
+        fields.append("total_chunks = ?"); values.append(total_chunks)
+    if completed_chunks is not None:
+        fields.append("completed_chunks = ?"); values.append(completed_chunks)
+    if not fields:
+        return
+    fields.append("updated_at = ?"); values.append(_now())
+    values.append(job_id)
+    with get_conn() as conn:
+        conn.execute(f"UPDATE generation_jobs SET {', '.join(fields)} WHERE id = ?", values)
+
+
+def add_job_section(job_id: int, order_index: int, start_seconds: float,
+                     end_seconds: float, markdown_text: str) -> None:
+    """Called the instant one chunk's FINAL section is written. The frontend's
+    poll picks this up and renders it immediately -- this is real content,
+    not a progress percentage."""
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO generation_job_sections (job_id, order_index, start_seconds, "
+            "end_seconds, markdown_text, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (job_id, order_index, start_seconds, end_seconds, markdown_text, _now()),
+        )
+        conn.execute("UPDATE generation_jobs SET updated_at = ? WHERE id = ?", (_now(), job_id))
+
+
+def mark_job_done(job_id: int, note_id: int) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE generation_jobs SET status = 'done', stage = 'done', "
+            "note_id = ?, updated_at = ? WHERE id = ?",
+            (note_id, _now(), job_id),
+        )
+
+
+def mark_job_failed(job_id: int, error: str) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE generation_jobs SET status = 'failed', error = ?, updated_at = ? WHERE id = ?",
+            (error, _now(), job_id),
+        )
+
+
+def get_job(job_id: int) -> Optional[dict]:
+    """Full job state + its streamed sections so far -- what the frontend poll reads."""
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM generation_jobs WHERE id = ?", (job_id,)).fetchone()
+        if not row:
+            return None
+        job = dict(row)
+        sections = conn.execute(
+            "SELECT order_index, start_seconds, end_seconds, markdown_text "
+            "FROM generation_job_sections WHERE job_id = ? ORDER BY order_index ASC",
+            (job_id,),
+        ).fetchall()
+        job["sections"] = [dict(s) for s in sections]
+        return job 

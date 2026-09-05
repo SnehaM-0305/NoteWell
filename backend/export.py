@@ -11,6 +11,7 @@ rendering engine, which keeps Step 2's dependency list small.
 import io
 import re
 from dataclasses import dataclass
+from timeutils import parse_timestamp
 
 
 # ---------------------------------------------------------------------------
@@ -155,3 +156,77 @@ def markdown_to_pdf(markdown: str, title: str) -> bytes:
         topMargin=0.9 * inch, bottomMargin=0.9 * inch,
     ).build(story)
     return buffer.getvalue()
+
+_TIMED_HEADING_RE = re.compile(r"^\[(?P<start>[\d:]+)\u2013(?P<end>[\d:]+)\]\s*(?P<title>.+)$")
+
+
+def extract_timed_sections(markdown: str) -> list[dict]:
+    """
+    Scans H1/H2 headings for the `[MM:SS\u2013MM:SS] Title` pattern the mode
+    skeletons instruct the model to produce (learning_modes.py). Returns one
+    dict per match: {"start_seconds", "end_seconds", "heading"}.
+
+    Headings that don't match (e.g. a note generated from pasted text, which
+    has no timing at all) are skipped, not errored on -- this is a no-op for
+    untimed sources, exactly like chunk_by_time() vs chunk_text() in main.py.
+    """
+    sections = []
+    for line in parse_markdown(markdown):
+        if line.kind not in ("h1", "h2"):
+            continue
+        match = _TIMED_HEADING_RE.match(line.text.strip())
+        if not match:
+            continue
+        try:
+            start = parse_timestamp(match.group("start"))
+            end = parse_timestamp(match.group("end"))
+        except ValueError:
+            continue
+        sections.append({
+            "start_seconds": start,
+            "end_seconds": end,
+            "heading": match.group("title").strip(),
+        })
+    return sections
+
+def split_into_sections(markdown: str) -> list[dict]:
+    """
+    Splits raw markdown into sections at each H1/H2 boundary. Returns
+    [{"index", "heading", "markdown_text"}, ...] in order.
+
+    IMPORTANT: builds each section's text from the ORIGINAL raw lines, not
+    from parse_markdown()'s stripped-and-reconstructed Line objects.
+    parse_markdown() strips markdown markers (e.g. numbered-list "1." is
+    thrown away entirely, bullets normalize "*" and "-" to one shape) --
+    reconstructing text from that would subtly reformat every section on
+    every save, even ones nobody touched. Using parse_markdown() only to
+    IDENTIFY where headings are, and slicing the original text at those
+    points, keeps untouched sections byte-for-byte identical when spliced
+    back in Phase 2.2's regenerate/edit endpoints.
+    """
+    raw_lines = markdown.splitlines()
+    parsed = parse_markdown(markdown)   # same line-for-line order as raw_lines
+
+    sections: list[dict] = []
+    current_heading = None
+    current_raw: list[str] = []
+
+    def _flush():
+        if current_heading is None and not current_raw:
+            return
+        sections.append({
+            "index": len(sections),
+            "heading": current_heading or "",
+            "markdown_text": "\n".join(current_raw).strip("\n"),
+        })
+
+    for raw_line, line in zip(raw_lines, parsed):
+        if line.kind in ("h1", "h2"):
+            _flush()
+            current_heading = line.text
+            current_raw = [raw_line]
+        else:
+            current_raw.append(raw_line)
+
+    _flush()
+    return sections

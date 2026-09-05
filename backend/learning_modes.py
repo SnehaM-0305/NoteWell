@@ -97,6 +97,152 @@ know. Confident vagueness is worse than an admitted gap.
 """,
 }
 
+# ---------------------------------------------------------------------------
+# Path B: opening / per-section / closing skeletons for TIMED (video/audio)
+# sources. Unlike _NOTE_STRUCTURES (one monolithic call for untimed sources),
+# these split note-writing into three separate model calls so each chunk's
+# section can be written and streamed to the user the moment it's ready,
+# instead of waiting for one call that sees the whole transcript.
+# ---------------------------------------------------------------------------
+
+_OPENING_STRUCTURES = {
+    "beginner": """
+        Given the finished sections of these study notes (shown below), write
+        the OPENING of the document in Markdown:
+
+        (1) "## The short version" — 2-3 sentences, no jargon, saying what
+            this is and why anyone would care.
+        (2) "## Start here" — the single core idea, explained from scratch,
+            with one concrete example BEFORE any general statement.
+
+        Do not repeat or rewrite the sections themselves -- they are already
+        final. Return ONLY the two headings above and their content.
+    """,
+    "medium": """
+        Given the finished sections of these study notes (shown below), write
+        the OPENING of the document in Markdown:
+
+        (1) "## TL;DR" — 2-3 sentences using standard terminology,
+            summarizing what the sections below actually cover.
+
+        Do not repeat or rewrite the sections themselves -- they are already
+        final. Return ONLY the heading above and its content.
+    """,
+    "expert": """
+        Given the finished sections of these reference notes (shown below),
+        write the OPENING of the document in Markdown:
+
+        (1) "## Summary" — 2-3 dense sentences. Precise, no warm-up,
+            summarizing what the sections below actually cover.
+
+        Do not repeat or rewrite the sections themselves -- they are already
+        final. Return ONLY the heading above and its content.
+    """,
+}
+
+_SECTION_STRUCTURES = {
+    "beginner": """
+        Write ONE H2 section of study notes in Markdown, covering only the
+        source text given to you below -- not the whole document.
+
+        - Begin with a heading in the exact form "## [START–END] Title",
+          using the exact bracketed time range given to you (do not compute
+          or alter it).
+        - Under the heading: short bullets, one idea per bullet.
+        - Define every technical term inline the first time it appears.
+        - Lead with a concrete example or a familiar situation before naming
+          the general rule it illustrates, wherever the source supports that.
+
+        ACCURACY GUARD: simplifying means saying less, never saying something
+        untrue. If you are not confident what a term refers to, say so
+        plainly rather than inventing a plausible story.
+    """,
+    "medium": """
+        Write ONE H2 section of study notes in Markdown, covering only the
+        source text given to you below -- not the whole document.
+
+        - Begin with a heading in the exact form "## [START–END] Title",
+          using the exact bracketed time range given to you (do not compute
+          or alter it).
+        - Under the heading: concise bullets covering both what something
+          does and why it works that way.
+        - Name specific tools, versions, and alternatives wherever the source
+          does.
+        - Use standard terminology, with a brief gloss on first use for
+          anything beyond the fundamentals.
+
+        ACCURACY GUARD: mark uncertainty explicitly. If something is
+        contested, version-dependent, or you are unsure, say so rather than
+        picking a side.
+    """,
+    "expert": """
+        Write ONE H2 section of reference notes in Markdown, covering only
+        the source text given to you below -- not the whole document.
+
+        - Begin with a heading in the exact form "## [START–END] Title",
+          using the exact bracketed time range given to you (do not compute
+          or alter it).
+        - Under the heading: bullets carrying specific detail -- exact names,
+          versions, numbers, mechanisms. One precise sentence beats three
+          vague ones.
+        - Omit anything a practitioner already knows. Density is the point.
+        - Use domain terminology freely and without glossing.
+
+        ACCURACY GUARD: state limitations, version dependencies, and the
+        boundaries of what you actually know. Confident vagueness is worse
+        than an admitted gap.
+    """,
+}
+
+_CLOSING_STRUCTURES = {
+    "beginner": """
+        Given the finished sections of these study notes (shown below), write
+        the CLOSING of the document in Markdown:
+
+        (1) "## Words you'll keep seeing" — 6-10 terms from the sections
+            above, with one-line plain definitions.
+        (2) "## Check yourself" — 5 questions testing whether the reader
+            grasped the core ideas covered in the sections above. Recall-level
+            is fine here.
+
+        Do not repeat or rewrite the sections themselves -- they are already
+        final. Return ONLY the two headings above and their content.
+    """,
+    "medium": """
+        Given the finished sections of these study notes (shown below), write
+        the CLOSING of the document in Markdown:
+
+        (1) "## When this matters" — the practical situations where the ideas
+            in the sections above change what someone would actually do.
+        (2) "## Key terms" — 5-8 terms drawn from the sections above, one line
+            each. Skip anything a reader at this level already knows.
+        (3) "## Check yourself" — 4 questions requiring application rather
+            than recall, based on the sections above.
+
+        Do not repeat or rewrite the sections themselves -- they are already
+        final. Return ONLY the three headings above and their content.
+    """,
+    "expert": """
+        Given the finished sections of these reference notes (shown below),
+        write the CLOSING of the document in Markdown:
+
+        (1) "## Trade-offs and edge cases" — where the ideas in the sections
+            above break down, what they cost, where practice or the
+            literature disagrees. This section is the point of the document;
+            give it real weight.
+        (2) "## Open questions" — what the sections above left unresolved,
+            ambiguous, or unaddressed. Omit this section only if there is
+            genuinely nothing.
+        (3) "## Check yourself" — 3 questions probing boundaries and
+            trade-offs based on the sections above, not definitions.
+
+        Do NOT include a glossary -- defining standard terminology for this
+        reader is padding.
+
+        Do not repeat or rewrite the sections themselves -- they are already
+        final. Return ONLY the sections above and their content.
+    """,
+}
 
 # ---------------------------------------------------------------------------
 # Note structure — the Markdown skeleton, which has to differ by mode
@@ -115,9 +261,12 @@ _NOTE_STRUCTURES = {
             this is and why anyone would care.
         (2) "## Start here" — the single core idea, explained from scratch,
             with one concrete example BEFORE any general statement.
-        (3) H2 sections for each remaining topic, in the order the source
-            introduced them. Under each: short bullets, one idea per bullet.
+        (3) H2 sections for each remaining topic, in the order the source introduced them. Under each: short bullets, one idea per bullet.
             Define every technical term inline the first time it appears.
+            If the chunk summaries below begin with a bracketed time range like
+            [MM:SS–MM:SS], start this section's heading with that exact same
+            bracketed range, e.g. "## [12:05–17:00] Setting up your environment".
+            If a chunk summary has no such range, just use a plain heading.
         (4) "## Words you'll keep seeing" — 6-10 terms with one-line plain
             definitions.
         (5) "## Check yourself" — 5 questions testing whether the reader
@@ -131,6 +280,10 @@ _NOTE_STRUCTURES = {
             bullets covering both what something does and why it works that
             way. Name specific tools, versions, and alternatives wherever
             the source does.
+            If the chunk summaries below begin with a bracketed time range like
+            [MM:SS–MM:SS], start this section's heading with that exact same
+            bracketed range. If a chunk summary has no such range, just use a
+            plain heading.
         (3) "## When this matters" — the practical situations where these
             ideas change what someone would actually do.
         (4) "## Key terms" — 5-8 terms, one line each. Skip anything a
@@ -145,6 +298,10 @@ _NOTE_STRUCTURES = {
         (2) H2 sections mirroring the source's topics. Under each: bullets
             carrying specific detail — exact names, versions, numbers,
             mechanisms. One precise sentence beats three vague ones.
+            If the chunk summaries below begin with a bracketed time range like
+            [MM:SS–MM:SS], start this section's heading with that exact same
+            bracketed range. If a chunk summary has no such range, just use a
+            plain heading.
         (3) "## Trade-offs and edge cases" — where this breaks down, what it
             costs, where practice or the literature disagrees. This section
             is the point of the document; give it real weight.
@@ -211,6 +368,29 @@ def notes_structure(mode: Optional[str]) -> str:
     build_notes(), not the system prompt — the model follows an explicit
     output shape far more reliably than a described one."""
     return textwrap.dedent(_NOTE_STRUCTURES[normalize_learning_mode(mode)]).strip()
+
+def notes_opening_structure(mode: Optional[str]) -> str:
+    """Instructions for writing JUST the opening block(s) of a timed
+    (video/audio) note -- used by write_opening() in main.py's Path B
+    pipeline, given the already-finalized per-chunk sections as context.
+    Not used by the untimed pipeline, which still uses notes_structure()."""
+    return textwrap.dedent(_OPENING_STRUCTURES[normalize_learning_mode(mode)]).strip()
+
+
+def notes_section_structure(mode: Optional[str]) -> str:
+    """Instructions for writing ONE final, ready-to-render H2 section
+    directly from one chunk's raw transcript text -- used by write_section()
+    in main.py. The caller supplies the exact time range and chunk text;
+    this skeleton only describes HOW to write the section's content and
+    heading format."""
+    return textwrap.dedent(_SECTION_STRUCTURES[normalize_learning_mode(mode)]).strip()
+
+
+def notes_closing_structure(mode: Optional[str]) -> str:
+    """Instructions for writing the whole-document closing block(s)
+    (glossary/check-yourself/trade-offs/etc.) -- used by write_closing() in
+    main.py, given the already-finalized sections as context."""
+    return textwrap.dedent(_CLOSING_STRUCTURES[normalize_learning_mode(mode)]).strip()
 
 
 def question_style(mode: Optional[str]) -> str:

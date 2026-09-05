@@ -16,6 +16,7 @@ import shutil
 from dataclasses import dataclass
 
 from fastapi import HTTPException
+from typing import Optional, Callable
 
 # faster-whisper loads its model lazily and reuses it across requests instead of
 # reloading (which is slow) on every single video.
@@ -28,9 +29,13 @@ WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")  # int8 = faste
 
 @dataclass
 class WhisperResult:
-    text: str
+    segments: list       # [{"start": float, "end": float, "text": str}, ...]
     language: str
     duration_seconds: float
+
+    @property
+    def text(self) -> str:
+        return " ".join(seg["text"].strip() for seg in self.segments)
 
 
 def _get_model():
@@ -92,23 +97,58 @@ def download_audio(video_url: str, workdir: str) -> str:
     return os.path.join(workdir, downloaded[0])
 
 
-def transcribe_audio(audio_path: str) -> WhisperResult:
-    """Run local faster-whisper transcription on a downloaded audio file."""
+def transcribe_audio(
+    audio_path: str,
+    start_offset: float = 0.0,
+    progress_callback: Optional[Callable[[float, float], None]] = None,
+) -> WhisperResult:
+    """
+    progress_callback(processed_seconds, total_seconds), if given, is called
+    once immediately with (0, total) -- faster-whisper knows total duration
+    from file metadata before transcribing anything -- and again after every
+    segment, so the caller gets live progress instead of only a final result.
+    """
     model = _get_model()
-    segments, info = model.transcribe(audio_path, beam_size=5, vad_filter=True)
-    text = " ".join(segment.text.strip() for segment in segments)
-    return WhisperResult(
-        text=text,
-        language=info.language,
-        duration_seconds=info.duration,
-    )
+    segments_iter, info = model.transcribe(audio_path, beam_size=5, vad_filter=True)
+
+    total_seconds = info.duration
+    if progress_callback is not None:
+        progress_callback(0.0, total_seconds)
+
+    segments = []
+    for seg in segments_iter:
+        entry = {"start": seg.start + start_offset, "end": seg.end + start_offset, "text": seg.text.strip()}
+        segments.append(entry)
+        if progress_callback is not None:
+            progress_callback(entry["end"], total_seconds)
+
+    return WhisperResult(segments=segments, language=info.language, duration_seconds=info.duration)
+
+def trim_audio(input_path: str, start_seconds: float, end_seconds: float, workdir: str) -> str:
+    """Slice [start_seconds, end_seconds] out of input_path using ffmpeg (stream copy, no re-encode)."""
+    import subprocess
+    output_path = os.path.join(workdir, "trimmed_audio" + os.path.splitext(input_path)[1])
+    cmd = ["ffmpeg", "-y", "-i", input_path, "-ss", str(start_seconds),
+           "-to", str(end_seconds), "-c", "copy", output_path]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise HTTPException(status_code=500, detail=f"ffmpeg trim failed: {result.stderr}")
+    return output_path
 
 
-def transcribe_video_with_whisper(video_url: str) -> WhisperResult:
-    """Full fallback pipeline: download audio to a temp dir, transcribe, clean up."""
+def transcribe_video_with_whisper(
+    video_url: str,
+    start_seconds: float = None,
+    end_seconds: float = None,
+    progress_callback: Optional[Callable[[float, float], None]] = None,
+) -> WhisperResult:
     workdir = tempfile.mkdtemp(prefix="v2n_audio_")
     try:
         audio_path = download_audio(video_url, workdir)
-        return transcribe_audio(audio_path)
+        offset = 0.0
+        if start_seconds is not None and end_seconds is not None:
+            audio_path = trim_audio(audio_path, start_seconds, end_seconds, workdir)
+            offset = start_seconds
+        return transcribe_audio(audio_path, start_offset=offset, progress_callback=progress_callback)
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
