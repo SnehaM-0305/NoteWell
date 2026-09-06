@@ -345,7 +345,7 @@ button.ghost, a.ghost{
 }
 button.ghost:hover, a.ghost:hover{ border-color:var(--violet-soft); color:#fff; }
 .notes-body{
-  padding:26px 24px 30px;
+  padding:26px 0 30px;
   font-size:0.98rem; line-height:1.7; color:var(--text-hi);
 }
 .notes-body h1, .notes-body h2, .notes-body h3{
@@ -684,3 +684,68 @@ select:disabled{ opacity:0.5; cursor:not-allowed; }
   transition:background .15s ease;
 }
 .section-chip:hover{ background:rgba(139,92,246,0.22); }
+
+/* ---------- Phase 2: section-level edit / regenerate ---------- */
+/* .notes-body switched from horizontal padding on the whole block to
+   padding on each .note-section instead (see the padding:26px 0 30px rule
+   above), so the hover Edit/Regenerate row can sit flush against each
+   section without doubling up the inset on both the block and the section. */
+.note-section{
+  position:relative;
+  padding:0 24px;
+}
+.note-section-static{ padding:0 24px; }   /* fallback wrapper when a note has no H1/H2 boundaries */
+
+.note-section:first-child .section-content > h1:first-child,
+.note-section:first-child .section-content > h2:first-child,
+.note-section-static > h1:first-child,
+.note-section-static > h2:first-child{
+  margin-top:0; padding-top:0; border-top:none;
+}
+
+.section-actions{
+  display:flex;
+  gap:8px;
+  opacity:0;
+  transition:opacity .15s ease;
+  padding:2px 0 16px;
+}
+.note-section:hover .section-actions{ opacity:1; }
+@media (hover: none){
+  .section-actions{ opacity:1; }   /* touch devices have no hover -- always show, same pattern as .msg-copy */
+}
+
+.section-action-btn{
+  font-family:'Inter'; font-size:0.72rem; font-weight:600;
+  color:var(--text-low);
+  background:rgba(255,255,255,0.05);
+  border:1px solid var(--glass-border);
+  border-radius:7px;
+  padding:4px 10px;
+  cursor:pointer;
+  transition:all .15s ease;
+}
+.section-action-btn:hover{ color:#fff; border-color:var(--violet-soft); }
+
+.section-editor-row{ padding:4px 0 18px; }
+.section-editor{
+  width:100%;
+  min-height:150px;
+  font-family:'JetBrains Mono', monospace;
+  font-size:0.82rem;
+  line-height:1.6;
+  color:var(--text-hi);
+  background:rgba(255,255,255,0.05);
+  border:1px solid var(--glass-border);
+  border-radius:var(--radius-sm);
+  padding:12px 14px;
+  resize:vertical;
+  outline:none;
+}
+.section-editor:focus{ border-color:var(--violet-soft); background:rgba(255,255,255,0.08); }
+.section-regen-input{ margin-bottom:0; }
+.section-editor-actions{
+  display:flex;
+  gap:8px;
+  margin-top:10px;
+}

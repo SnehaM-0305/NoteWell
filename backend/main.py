@@ -13,6 +13,8 @@ Features on top of that:
   * Practice questions — generated from a saved note, in batches, with
     .docx/.pdf export that follows the answers-shown/hidden state.
   * Library — list, reopen, and delete anything previously generated.
+  * Section-level edit/regenerate — rewrite or manually replace one section
+    of an already-generated note without touching the rest (Phase 2).
 
 Still not implemented: OCR for scanned/image-only PDFs, and MCP tools.
 """
@@ -49,7 +51,11 @@ from learning_modes import (
     notes_structure,
     question_style,
 )
-from transcription import transcribe_video_with_whisper, transcribe_audio
+from transcription import (
+    transcribe_video_with_whisper,
+    transcribe_video_with_groq,
+    transcribe_audio,
+)
 from timeutils import parse_timestamp, format_timestamp, pick_interval_seconds
 from datetime import datetime, timezone
 from typing import List, Optional, Callable
@@ -143,6 +149,18 @@ class QuestionsRequest(BaseModel):
     learning_mode: Optional[str] = DEFAULT_LEARNING_MODE
 
 
+class SectionRegenerateRequest(BaseModel):
+    # Optional free-text steer, e.g. "make this shorter" / "add a concrete example".
+    # None means "just rewrite it, no specific direction."
+    instruction: Optional[str] = None
+
+
+class SectionEditRequest(BaseModel):
+    # Full replacement text for one section, heading included. Manual edit —
+    # no LLM call, so unlike regenerate this CAN change the heading itself.
+    markdown_text: str
+
+
 # ---------------------------------------------------------------------------
 # Pipeline steps
 # ---------------------------------------------------------------------------
@@ -177,17 +195,18 @@ def fetch_transcript(
     start_seconds: Optional[float] = None, end_seconds: Optional[float] = None,
     progress_callback: Optional[Callable[[float, float], None]] = None,
 ) -> tuple[List[dict], str]:
-    """Try YouTube captions first (free + instant), fall back to Whisper.
+    """Try YouTube captions first (free + instant), then Groq's hosted
+    Whisper, then fall back to fully-local Whisper as a last resort.
 
     Returns (segments, origin) where segments is a list of
     {"text": str, "start": float, "duration": float} dicts (NOT a flattened
     string anymore — V1 threw this timing away, V2 needs it for clickable
-    timestamps) and origin is "captions" or "whisper".
+    timestamps) and origin is "captions", "whisper_groq", or "whisper".
 
     If start_seconds/end_seconds are given, the returned segments are limited
     to that range. For captions this is a simple filter (the full transcript
-    is already fetched — cheap). For Whisper, the range is pushed down into
-    transcribe_video_with_whisper() so the video isn't fully transcribed and
+    is already fetched — cheap). For both Whisper paths, the range is pushed
+    down into the download/trim step so the video isn't fully transcribed and
     then discarded.
     """
     try:
@@ -214,12 +233,36 @@ def fetch_transcript(
     except Exception as e:
         print(f"Unexpected transcript error: {e}")
 
-    print("Falling back to Whisper transcription...")
-    result = transcribe_video_with_whisper(
-        video_url, start_seconds=start_seconds, end_seconds=end_seconds,
-        progress_callback=progress_callback,
-    )
-    
+    # Groq's hosted Whisper first: faster than local CPU inference (runs on
+    # Groq's own hardware) AND more accurate (large-v3, the full model —
+    # local Whisper here runs a smaller model specifically to stay fast
+    # enough on a free-tier CPU box). Same GROQ_API_KEY already used for the
+    # LLM calls above, no separate signup needed.
+    #
+    # No progress_callback for this path -- Groq's endpoint is one blocking
+    # call, not a segment-by-segment generator, so there's no incremental
+    # progress to report while it's running (see transcription.py). The
+    # caller's "transcribing" stage just jumps to 100% once this returns,
+    # same as the captions path already does today.
+    print("Trying Groq's hosted Whisper...")
+    try:
+        result = transcribe_video_with_groq(
+            video_url, start_seconds=start_seconds, end_seconds=end_seconds,
+        )
+        if result.segments:
+            origin = "whisper_groq"
+        else:
+            raise ValueError("Groq Whisper returned no segments.")
+    except Exception as e:
+        # Covers: Groq API errors, rate limits, network issues, or an empty
+        # result -- any of these fall back to the fully-local path rather
+        # than failing the whole request outright.
+        print(f"Groq Whisper failed ({e}), falling back to local Whisper...")
+        result = transcribe_video_with_whisper(
+            video_url, start_seconds=start_seconds, end_seconds=end_seconds,
+            progress_callback=progress_callback,
+        )
+        origin = "whisper"
 
     if not result.segments:
         raise HTTPException(
@@ -228,7 +271,7 @@ def fetch_transcript(
         )
 
     # Normalize to the same {"text", "start", "duration"} shape captions use
-    # above -- Whisper's segments carry "end" instead of "duration" (see
+    # above -- both Whisper paths carry "end" instead of "duration" (see
     # transcription.py). Converting once here means chunk_by_time() and
     # generate_and_save() never need to know or care which source produced
     # the segments they're chunking.
@@ -237,8 +280,8 @@ def fetch_transcript(
         for s in result.segments
     ]
 
-    print("Transcript generated using Whisper.")
-    return segments, "whisper"
+    print(f"Transcript generated using {origin}.")
+    return segments, origin
 
 def chunk_by_time(segments: List[dict], interval_seconds: float) -> List[dict]:
     """
@@ -287,6 +330,27 @@ def chunk_by_time(segments: List[dict], interval_seconds: float) -> List[dict]:
         })
 
     return chunks
+
+
+CHUNK_WORDS = 900  # untimed sources only (pasted text/pdf/docx) -- video/audio
+                    # use chunk_by_time() instead, since those have real timing
+
+
+def chunk_text(text: str, chunk_words: int = CHUNK_WORDS) -> List[str]:
+    """
+    Word-count chunking for untimed sources. No timestamps exist for pasted
+    text/PDF/DOCX, so there's nothing to chunk BY except a fixed word
+    window -- kept as its own simple function rather than merged into
+    chunk_by_time(), since that function's whole design is built around
+    seconds, which doesn't apply here at all.
+    """
+    words = text.split()
+    if not words:
+        return []
+    return [
+        " ".join(words[i:i + chunk_words])
+        for i in range(0, len(words), chunk_words)
+    ]
 
 
 def call_groq(prompt: str, system: str) -> str:
@@ -400,7 +464,10 @@ def _run_video_generation_job(
     each section into generation_job_sections the moment it's written (Path
     B), so the frontend's poll can render real content incrementally instead
     of waiting for the whole note. Also reports live transcription progress
-    via a throttled callback passed into fetch_transcript().
+    via a throttled callback passed into fetch_transcript() -- only actually
+    incremental when the local-Whisper path is the one that ends up running;
+    see fetch_transcript()'s docstring for why the Groq path can't report
+    partial progress.
     """
     try:
         last_report_time = [0.0]   # mutable holder so the closure can update it
@@ -821,6 +888,172 @@ def get_note_sections(note_id: int):
         raise HTTPException(status_code=404, detail="Note not found.")
     return {"sections": db.get_note_sections(note_id)}
 
+
+# ---------------------------------------------------------------------------
+# Section-level edit & regenerate (Phase 2)
+#
+# Distinct from GET /api/notes/{note_id}/sections above: that endpoint reads
+# from the note_sections TABLE (timestamp + heading only, built for the
+# seek-chip timeline in Phase 1). This one reads the note's live markdown and
+# splits it fresh via export.split_into_sections(), because edit/regenerate
+# need each section's actual body text, not just its timing metadata.
+# ---------------------------------------------------------------------------
+
+@app.get("/api/notes/{note_id}/editable-sections")
+def get_editable_sections(note_id: int):
+    """Full section list for the edit/regenerate UI:
+    [{"index","heading","markdown_text"}, ...]. Recomputed on every call from
+    the note's current structured_markdown (cheap, pure-Python split — no
+    need to persist this separately from the source of truth)."""
+    note = db.get_note(note_id)
+    if not note:
+        raise HTTPException(status_code=404, detail="Note not found.")
+    return {"sections": export.split_into_sections(note["structured_markdown"])}
+
+
+def _rebuild_note_markdown(sections: List[dict]) -> str:
+    """Joins a section list (from export.split_into_sections(), one entry
+    possibly just replaced) back into one markdown string. Sections are
+    already newline-separated internally; a blank line between them keeps
+    Markdown block boundaries (headings, lists) intact."""
+    return "\n\n".join(s["markdown_text"] for s in sections)
+
+
+def _save_edited_note(note_id: int, title: str, sections: List[dict]) -> str:
+    """
+    Shared tail end of both the regenerate and manual-edit endpoints below.
+    Splices the section list into one markdown string, saves it, and
+    re-derives everything downstream that depends on note content:
+
+      1. db.update_note_markdown()   -- the note itself
+      2. export.extract_timed_sections() + db.save_note_sections()
+         -- re-parses the (possibly-changed) headings for the Phase 1
+            seek-chip timeline. A shortened/lengthened section can shift
+            which headings still match the [MM:SS–MM:SS] pattern, so this
+            has to re-run on every save, not just at generation time.
+      3. rag.reindex_note_clean()    -- the RAG index (see bug 3.1: a plain
+         index_note() upsert would leave stale chunks behind if the note
+         shrinks; reindex_note_clean() deletes first)
+
+    These are the exact same three calls generate_and_save() already makes
+    for a brand-new note -- edit/regenerate just re-runs them against an
+    updated markdown string instead of a freshly-generated one.
+    """
+    new_markdown = _rebuild_note_markdown(sections)
+    db.update_note_markdown(note_id, new_markdown)
+
+    timed_sections = export.extract_timed_sections(new_markdown)
+    db.save_note_sections(note_id, timed_sections)
+
+    try:
+        rag.reindex_note_clean(note_id, title, new_markdown)
+    except Exception as exc:
+        print(f"[rag] failed to reindex note {note_id} after edit: {exc}")
+
+    return new_markdown
+
+
+@app.post("/api/notes/{note_id}/sections/{index}/regenerate")
+def regenerate_section(note_id: int, index: int, req: SectionRegenerateRequest):
+    """
+    Scoped LLM regenerate of ONE section -- one Groq call, not a full-note
+    regeneration. The heading line (including any [MM:SS–MM:SS] bracket) is
+    split off and never sent to the model for rewriting; only the body is
+    regenerated, then reassembled as `heading + new_body`. This guarantees a
+    regenerate can never silently drop or reformat the timestamp bracket a
+    Phase-1 seek chip depends on -- the model literally never sees it.
+    """
+    note = db.get_note(note_id)
+    if not note:
+        raise HTTPException(status_code=404, detail="Note not found.")
+
+    sections = export.split_into_sections(note["structured_markdown"])
+    if index < 0 or index >= len(sections):
+        raise HTTPException(status_code=404, detail="Section index out of range.")
+
+    target_lines = sections[index]["markdown_text"].splitlines()
+    heading_line = target_lines[0] if target_lines else f"## {sections[index]['heading']}"
+    current_body = "\n".join(target_lines[1:]).strip()
+
+    # Continuity context: the note's opening section stands in for a
+    # dedicated TL;DR field (none is stored separately). Skipped when
+    # regenerating the opening itself, so it isn't handed its own current
+    # text as "context to stay consistent with."
+    context = sections[0]["markdown_text"] if index != 0 and sections else ""
+
+    instruction_block = (
+        f"\n\nInstruction from the user for this rewrite: {req.instruction}"
+        if req.instruction else ""
+    )
+    context_block = (
+        f"Overall notes context, for consistency only -- do not repeat this back:\n{context}\n\n"
+        if context else ""
+    )
+
+    prompt = textwrap.dedent(f"""
+        Rewrite ONLY the body text of one section from a set of study notes.
+        Do not write a heading -- the heading is fixed and handled separately,
+        outside what you're asked to produce. Keep the same topic/scope as the
+        current body; don't wander into material that belongs in a different
+        section.
+
+        {context_block}Current body text for this section:
+        {current_body}
+        {instruction_block}
+    """).strip()
+    system = (
+        "You rewrite one section's body text for a set of study notes. Output ONLY "
+        "the rewritten body -- no heading, no preamble, no meta-commentary about "
+        "the rewrite itself."
+    )
+
+    try:
+        new_body = call_groq(prompt, system=system)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Regenerate request to Groq failed: {exc}") from exc
+
+    sections[index]["markdown_text"] = f"{heading_line}\n\n{new_body.strip()}"
+    new_markdown = _save_edited_note(note_id, note["title"], sections)
+
+    return {
+        "note_id": note_id,
+        "index": index,
+        "markdown_text": sections[index]["markdown_text"],
+        "notes_markdown": new_markdown,
+    }
+
+
+@app.patch("/api/notes/{note_id}/sections/{index}")
+def edit_section(note_id: int, index: int, req: SectionEditRequest):
+    """
+    Pure manual edit -- no LLM call, no Groq cost. The user's text replaces
+    the section verbatim, heading included, so (unlike regenerate) this CAN
+    change or remove the heading's [MM:SS–MM:SS] bracket. That's allowed on
+    purpose: it just means the next extract_timed_sections() pass skips this
+    section for the seek-chip timeline, the same graceful no-op untimed notes
+    (pasted text/pdf/docx) already go through -- not an error condition.
+    """
+    note = db.get_note(note_id)
+    if not note:
+        raise HTTPException(status_code=404, detail="Note not found.")
+
+    sections = export.split_into_sections(note["structured_markdown"])
+    if index < 0 or index >= len(sections):
+        raise HTTPException(status_code=404, detail="Section index out of range.")
+
+    new_text = req.markdown_text.strip()
+    if not new_text:
+        raise HTTPException(status_code=400, detail="Section text can't be empty.")
+
+    sections[index]["markdown_text"] = new_text
+    new_markdown = _save_edited_note(note_id, note["title"], sections)
+
+    return {
+        "note_id": note_id,
+        "index": index,
+        "markdown_text": sections[index]["markdown_text"],
+        "notes_markdown": new_markdown,
+    }
 
 
 # ---------------------------------------------------------------------------

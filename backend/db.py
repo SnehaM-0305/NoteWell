@@ -234,6 +234,28 @@ def get_note(note_id: int) -> Optional[dict]:
         return dict(row) if row else None
 
 
+def update_note_markdown(note_id: int, markdown: str) -> bool:
+    """
+    Overwrites one note's structured_markdown after a section regenerate or
+    manual edit (Phase 2). generated_at is bumped too -- this is a real new
+    version of the note's content, not just a metadata tweak, so callers that
+    show "generated" dates (the Library list) should reflect the edit.
+
+    Deliberately does NOT touch note_sections or the RAG index -- those are
+    separate downstream artifacts of a markdown change, not part of "saving
+    the note" itself, and are re-derived by the caller (see main.py's
+    _save_edited_note()) right after this returns. Keeping this function
+    single-purpose means it can also be reused later for any other kind of
+    note-content update without dragging re-indexing along for the ride.
+    """
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE notes SET structured_markdown = ?, generated_at = ? WHERE id = ?",
+            (markdown, _now(), note_id),
+        )
+        return cur.rowcount > 0
+
+
 def create_chat_session(scope: str, title: str = "New chat") -> int:
     with get_conn() as conn:
         cur = conn.execute(
@@ -467,4 +489,4 @@ def get_job(job_id: int) -> Optional[dict]:
             (job_id,),
         ).fetchall()
         job["sections"] = [dict(s) for s in sections]
-        return job 
+        return job

@@ -3,11 +3,17 @@ Video-to-Notes AI Platform — STEP 2: Whisper fallback
 Used only when a video has NO captions (youtube-transcript-api came up empty).
 
 Pipeline (Section 4, step 4 of the plan):
-  download audio only with yt-dlp -> transcribe locally with faster-whisper.
+  download audio only with yt-dlp -> transcribe.
 
-This never uploads audio anywhere — everything runs on the machine hosting the backend.
-The 'small' model is the default: a reasonable CPU speed/accuracy tradeoff for lecture
-and talk-style speech, as called out in Section 11 ("Key Considerations").
+Two transcription backends now exist:
+  - transcribe_audio() / transcribe_video_with_whisper(): fully local,
+    faster-whisper. Never uploads audio anywhere.
+  - transcribe_audio_via_groq() / transcribe_video_with_groq(): sends the
+    downloaded (and possibly trimmed) audio file to Groq's hosted Whisper
+    endpoint instead -- faster and more accurate than what a free-tier CPU
+    box can run locally, using the same GROQ_API_KEY already set up for the
+    LLM calls in main.py. main.py tries this first and falls back to the
+    local path if it fails (see fetch_transcript() there).
 """
 
 import os
@@ -25,6 +31,15 @@ _whisper_model = None
 WHISPER_MODEL_SIZE = os.getenv("WHISPER_MODEL_SIZE", "small")  # tiny/base/small/medium
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")
 WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")  # int8 = fastest on CPU
+
+# Groq's hosted Whisper model. "whisper-large-v3" (not the "-turbo" variant)
+# on purpose -- this project already needs speed to come from somewhere other
+# than the model choice (Groq's own hardware), so the full-accuracy model is
+# the right default. Override via env var if you ever want the faster/less
+# accurate turbo variant instead.
+GROQ_WHISPER_MODEL = os.getenv("GROQ_WHISPER_MODEL", "whisper-large-v3")
+
+_groq_client = None
 
 
 @dataclass
@@ -57,6 +72,32 @@ def _get_model():
             WHISPER_MODEL_SIZE, device=WHISPER_DEVICE, compute_type=WHISPER_COMPUTE_TYPE
         )
     return _whisper_model
+
+
+def _get_groq_client():
+    """Lazily built, reused across requests -- same pattern as _get_model()
+    above. Deliberately its OWN Groq() instance rather than importing main.py's
+    `client`, so transcription.py doesn't need to import from main.py (which
+    would create a circular import, since main.py already imports from this
+    file)."""
+    global _groq_client
+    if _groq_client is None:
+        try:
+            from groq import Groq
+        except ImportError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail="groq is not installed. Run 'pip install -r requirements.txt' and try again.",
+            ) from exc
+
+        api_key = os.getenv("GROQ_API_KEY")
+        if not api_key:
+            raise HTTPException(
+                status_code=500,
+                detail="GROQ_API_KEY is not set -- can't use Groq's hosted Whisper.",
+            )
+        _groq_client = Groq(api_key=api_key)
+    return _groq_client
 
 
 def download_audio(video_url: str, workdir: str) -> str:
@@ -124,6 +165,57 @@ def transcribe_audio(
 
     return WhisperResult(segments=segments, language=info.language, duration_seconds=info.duration)
 
+
+def transcribe_audio_via_groq(audio_path: str, start_offset: float = 0.0) -> WhisperResult:
+    """
+    Sends audio_path to Groq's hosted Whisper endpoint instead of running a
+    model locally. Returns the exact same WhisperResult shape as
+    transcribe_audio(), so every caller downstream (chunk_by_time(),
+    generate_and_save(), etc.) can't tell which backend produced it.
+
+    No progress_callback parameter here on purpose: Groq's endpoint is one
+    blocking HTTP call that returns the full transcript at once, not a
+    segment-by-segment generator like faster-whisper's model.transcribe().
+    There's nothing incremental to report mid-call. See main.py's
+    fetch_transcript() for how the caller handles this (the "transcribing"
+    progress stage just jumps straight to 100% once this returns, instead of
+    ticking up live the way the local-Whisper path does).
+    """
+    client = _get_groq_client()
+
+    with open(audio_path, "rb") as f:
+        transcription = client.audio.transcriptions.create(
+            file=f,
+            model=GROQ_WHISPER_MODEL,
+            response_format="verbose_json",
+            timestamp_granularities=["segment"],
+        )
+
+    # The Groq SDK's response object exposes .segments as a list of dicts
+    # (OpenAI-compatible shape: {"start", "end", "text", ...}). Guard with
+    # getattr/or in case a future SDK version changes this slightly, rather
+    # than a bare AttributeError crashing the whole request.
+    raw_segments = getattr(transcription, "segments", None) or []
+    segments = [
+        {
+            "start": seg["start"] + start_offset,
+            "end": seg["end"] + start_offset,
+            "text": seg["text"].strip(),
+        }
+        for seg in raw_segments
+    ]
+
+    language = getattr(transcription, "language", "") or ""
+    duration = getattr(transcription, "duration", None)
+    if duration is None:
+        # Fall back to the last segment's end time if the API ever omits an
+        # explicit duration field -- keeps this resilient to minor response
+        # shape differences rather than raising.
+        duration = (segments[-1]["end"] - start_offset) if segments else 0.0
+
+    return WhisperResult(segments=segments, language=language, duration_seconds=duration)
+
+
 def trim_audio(input_path: str, start_seconds: float, end_seconds: float, workdir: str) -> str:
     """Slice [start_seconds, end_seconds] out of input_path using ffmpeg (stream copy, no re-encode)."""
     import subprocess
@@ -150,5 +242,30 @@ def transcribe_video_with_whisper(
             audio_path = trim_audio(audio_path, start_seconds, end_seconds, workdir)
             offset = start_seconds
         return transcribe_audio(audio_path, start_offset=offset, progress_callback=progress_callback)
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+def transcribe_video_with_groq(
+    video_url: str,
+    start_seconds: float = None,
+    end_seconds: float = None,
+) -> WhisperResult:
+    """
+    Groq-hosted equivalent of transcribe_video_with_whisper(). The
+    download/trim steps are IDENTICAL and still fully local (yt-dlp, ffmpeg)
+    -- Groq only ever receives the final audio file you send it, same as
+    uploading a file to any transcription API. Only the actual transcription
+    step (the expensive, slow part) is swapped from a local model call to a
+    Groq API call.
+    """
+    workdir = tempfile.mkdtemp(prefix="v2n_audio_groq_")
+    try:
+        audio_path = download_audio(video_url, workdir)
+        offset = 0.0
+        if start_seconds is not None and end_seconds is not None:
+            audio_path = trim_audio(audio_path, start_seconds, end_seconds, workdir)
+            offset = start_seconds
+        return transcribe_audio_via_groq(audio_path, start_offset=offset)
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
